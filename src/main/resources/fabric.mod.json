@@ -1,0 +1,35 @@
+{
+	"schemaVersion": 1,
+	"id": "civcraft",
+	"version": "${version}",
+	"name": "CivCraft",
+	"description": "Top-down RTS-style civilization mod: squad units, buildings, resources, 2-4 player LAN.",
+	"authors": [
+		"fajar"
+	],
+	"contact": {},
+	"license": "CC0-1.0",
+	"icon": "assets/civcraft/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.civcraft.Civcraft"
+		],
+		"client": [
+			"com.civcraft.client.CivcraftClient"
+		]
+	},
+	"mixins": [
+		"civcraft.mixins.json",
+		{
+			"config": "civcraft.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.2",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

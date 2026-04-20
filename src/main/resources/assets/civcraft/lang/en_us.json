@@ -1,0 +1,8 @@
+{
+	"itemGroup.civcraft.main": "CivCraft",
+	"block.civcraft.town_hall": "Town Hall",
+	"item.civcraft.settler_charter": "Settler's Charter",
+	"entity.civcraft.settler": "Settler",
+	"key.categories.civcraft": "CivCraft",
+	"key.civcraft.toggle_camera": "Toggle Isometric Camera"
+}

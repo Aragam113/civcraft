@@ -1,0 +1,22 @@
+pluginManagement {
+	repositories {
+		maven { url = uri('file:///C:/Users/fajar/dev/mc-mods/civcraft/local-repo') }
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
+	// Map plugin id -> artifact when the id isn't the same coordinate.
+	resolutionStrategy {
+		eachPlugin {
+			if (requested.id.id == 'fabric-loom') {
+				useModule("net.fabricmc:fabric-loom:${requested.version}")
+			}
+		}
+	}
+}
+
+// Should match your modid
+rootProject.name = 'civcraft'

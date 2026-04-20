@@ -1,0 +1,8 @@
+{
+	"itemGroup.civcraft.main": "CivCraft",
+	"block.civcraft.town_hall": "Ратуша",
+	"item.civcraft.settler_charter": "Грамота поселенца",
+	"entity.civcraft.settler": "Поселенец",
+	"key.categories.civcraft": "CivCraft",
+	"key.civcraft.toggle_camera": "Переключить изометрию"
+}

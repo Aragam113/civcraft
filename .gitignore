@@ -1,0 +1,49 @@
+# gradle
+.gradle/
+build/
+out/
+classes/
+bin/
+
+# loom / fabric
+.loom-cache/
+.loom/
+remappedSrc/
+run/
+
+# offline maven mirror (~500 MB of third-party jars, reproduced via tools/)
+local-repo/
+
+# tools — locally downloaded artifacts, not source
+tools/fabric-installer.jar
+tools/*.bak
+__pycache__/
+*.pyc
+
+# eclipse
+*.launch
+
+# idea
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# vscode
+.settings/
+.vscode/
+.classpath
+.project
+
+# macos / windows
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# java crash reports
+hs_err_*.log
+replay_*.log
+*.hprof
+*.jfr
+*.log

@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"package": "com.civcraft.client.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"BlockGrabMouseMixin",
+		"HideCrosshairMixin",
+		"MouseScrollMixin",
+		"TopDownCameraMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
