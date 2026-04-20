@@ -16,7 +16,7 @@ public abstract class TopDownCameraMixin {
 	@Shadow protected abstract void setPosition(double x, double y, double z);
 	@Shadow protected abstract void setRotation(float yaw, float pitch);
 
-	@Inject(method = "setup", at = @At("HEAD"), cancellable = true)
+	@Inject(method = "setup", at = @At("TAIL"))
 	private void civcraft$applyIsometricView(Level area,
 	                                         Entity focused,
 	                                         boolean thirdPerson,
@@ -24,19 +24,20 @@ public abstract class TopDownCameraMixin {
 	                                         float partialTicks,
 	                                         CallbackInfo ci) {
 		if (!TopDownMode.active) return;
-		ci.cancel();
 
-		float pitch = TopDownMode.pitch;
-		float yaw = TopDownMode.yaw;
-		float dist = TopDownMode.distance;
+		// Interpolate prev → current using the render-frame's partialTicks so
+		// motion stays smooth between 20Hz input ticks.
+		float t = partialTicks;
+		float pitch = TopDownMode.lerp(TopDownMode.prevPitch, TopDownMode.pitch, t);
+		float yaw   = TopDownMode.lerpYaw(TopDownMode.prevYaw, TopDownMode.yaw, t);
+		float dist  = TopDownMode.lerp(TopDownMode.prevDistance, TopDownMode.distance, t);
 
 		double radPitch = Math.toRadians(pitch);
 		double radYaw = Math.toRadians(yaw);
 
-		// Center on the anchor (not the player), so WASD moves the camera alone.
-		double cx = TopDownMode.anchorX;
-		double cy = TopDownMode.anchorY;
-		double cz = TopDownMode.anchorZ;
+		double cx = TopDownMode.lerp(TopDownMode.prevAnchorX, TopDownMode.anchorX, t);
+		double cy = TopDownMode.lerp(TopDownMode.prevAnchorY, TopDownMode.anchorY, t);
+		double cz = TopDownMode.lerp(TopDownMode.prevAnchorZ, TopDownMode.anchorZ, t);
 
 		double horiz = Math.cos(radPitch) * dist;
 		double vert  = Math.sin(radPitch) * dist;

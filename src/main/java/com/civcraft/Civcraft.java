@@ -1,11 +1,14 @@
 package com.civcraft;
 
-import com.civcraft.entity.SettlerEntity;
-import com.civcraft.network.FoundTownHallPayload;
+import com.civcraft.building.GhostBuilding;
+import com.civcraft.network.CancelGhostPayload;
+import com.civcraft.network.ConfirmGhostPayload;
+import com.civcraft.network.GhostStatePayload;
 import com.civcraft.network.MoveOrderPayload;
-import com.civcraft.network.NextTurnPayload;
+import com.civcraft.network.ResourceSyncPayload;
+import com.civcraft.network.SpawnGhostPayload;
 import com.civcraft.network.SpawnSettlersPayload;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import com.civcraft.network.UpdateGhostPosPayload;
 import com.civcraft.registry.ModBlocks;
 import com.civcraft.registry.ModEntities;
 import com.civcraft.registry.ModItemGroups;
@@ -13,8 +16,17 @@ import com.civcraft.registry.ModItems;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.commands.Commands;
+import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructurePlaceSettings;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -29,16 +41,49 @@ public class Civcraft implements ModInitializer {
 	public static final String MOD_ID = "civcraft";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-	/**
-	 * Per-unit move targets: the server steps each entity directly toward its
-	 * target every tick, bypassing vanilla pathfinding entirely. This keeps the
-	 * squad moving at a uniform, predictable speed in a straight line — which
-	 * is exactly what an RTS march should look like.
-	 */
-	/** Public so client-side world renderer can draw trajectory lines. */
+	/** Per-unit move targets for the real-time march system. */
 	public static final java.util.Map<UUID, Vec3> MOVE_TARGETS = new ConcurrentHashMap<>();
-	private static final double STEP_PER_TICK = 0.12;  // ≈ 2.4 blocks/sec
+	private static final double STEP_PER_TICK = 0.12;
 	private static final double ARRIVE_RADIUS = 0.35;
+
+	/** Offset from the town hall spire to where newly spawned settlers stand. */
+	public static final int SPAWN_SOUTH_OFFSET = 4;
+
+	/** Per-lumberjack state: home sawmill position + current phase. */
+	public enum WorkPhase { TO_LOG, CHOP, TO_HOME, DEPOSIT }
+	public static final class LumberjackJob {
+		public BlockPos home;
+		public WorkPhase phase = WorkPhase.TO_LOG;
+		public BlockPos target;  // log pos or sawmill pos
+		public int chopTicks = 0;
+		public UUID owner;
+		public LumberjackJob(BlockPos home, UUID owner) { this.home = home; this.owner = owner; }
+	}
+	public static final java.util.Map<UUID, LumberjackJob> LUMBERJACKS = new ConcurrentHashMap<>();
+	public static final java.util.Map<UUID, int[]> PLAYER_RESOURCES = new ConcurrentHashMap<>();
+	/** Log blocks placed as part of player buildings — lumberjacks must skip these. */
+	public static final java.util.Set<BlockPos> PROTECTED_LOGS = ConcurrentHashMap.newKeySet();
+
+	/** One PENDING (unconfirmed, draggable) ghost per player. Blocks the client UI. */
+	public static final java.util.Map<UUID, GhostBuilding> PENDING_GHOSTS = new ConcurrentHashMap<>();
+
+	/** Confirmed builds currently under construction — multiple allowed per player. */
+	public static final java.util.Set<GhostBuilding> ACTIVE_BUILDS = ConcurrentHashMap.newKeySet();
+
+	public enum CarrierPhase { TO_HALL, WAIT_HALL, TO_GHOST, WAIT_GHOST }
+	public static final class CarrierJob {
+		public final GhostBuilding target;
+		public CarrierPhase phase = CarrierPhase.TO_HALL;
+		public int waitTicks = 0;
+		public CarrierJob(GhostBuilding target) { this.target = target; }
+	}
+	public static final java.util.Map<UUID, CarrierJob> CARRIERS = new ConcurrentHashMap<>();
+	private static final int CARRIER_WAIT_TICKS = 10;
+	private static final int DELIVERY_TRIPS = 9;  // 3 builders × 3 trips = smithy/sawmill done
+	private static final double LUMBERJACK_STEP = 0.08;
+	private static final int LUMBERJACK_SEARCH_RADIUS = 48;
+	private static final int CHOP_DURATION_TICKS = 40;
+	private static final int WOOD_PER_CHOP = 5;
 
 	@Override
 	public void onInitialize() {
@@ -49,42 +94,407 @@ public class Civcraft implements ModInitializer {
 		ModItemGroups.register();
 
 		PayloadTypeRegistry.playC2S().register(MoveOrderPayload.ID, MoveOrderPayload.CODEC);
-		ServerPlayNetworking.registerGlobalReceiver(MoveOrderPayload.ID, (payload, context) -> {
-			context.server().execute(() -> handleMoveOrder(context.player().level(), payload));
-		});
-
-		PayloadTypeRegistry.playC2S().register(FoundTownHallPayload.ID, FoundTownHallPayload.CODEC);
-		ServerPlayNetworking.registerGlobalReceiver(FoundTownHallPayload.ID, (payload, context) -> {
-			context.server().execute(() -> handleFoundTownHall(context.player().level(), payload));
-		});
+		ServerPlayNetworking.registerGlobalReceiver(MoveOrderPayload.ID, (payload, context) ->
+				context.server().execute(() -> handleMoveOrder(context.player().level(), payload)));
 
 		PayloadTypeRegistry.playC2S().register(SpawnSettlersPayload.ID, SpawnSettlersPayload.CODEC);
-		ServerPlayNetworking.registerGlobalReceiver(SpawnSettlersPayload.ID, (payload, context) -> {
-			context.server().execute(() -> handleSpawnSettlers(context.player().level(), payload));
-		});
+		ServerPlayNetworking.registerGlobalReceiver(SpawnSettlersPayload.ID, (payload, context) ->
+				context.server().execute(() -> handleSpawnSettlers(context.player().level(), payload)));
 
-		PayloadTypeRegistry.playC2S().register(NextTurnPayload.ID, NextTurnPayload.CODEC);
-		ServerPlayNetworking.registerGlobalReceiver(NextTurnPayload.ID, (payload, context) -> {
-			context.server().execute(() -> beginTurnAdvance(context.server()));
-		});
+		PayloadTypeRegistry.playC2S().register(SpawnGhostPayload.ID, SpawnGhostPayload.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(SpawnGhostPayload.ID, (payload, context) ->
+				context.server().execute(() -> handleSpawnGhost(context.player(), payload)));
 
-		// Freeze the day cycle + lock world to daytime on first load.
-		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-			var src = server.createCommandSourceStack().withSuppressedOutput();
-			server.getCommands().performPrefixedCommand(src, "gamerule doDaylightCycle false");
-			for (ServerLevel level : server.getAllLevels()) {
-				level.setDayTime(6000); // noon-morning
-			}
-		});
+		PayloadTypeRegistry.playC2S().register(UpdateGhostPosPayload.ID, UpdateGhostPosPayload.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(UpdateGhostPosPayload.ID, (payload, context) ->
+				context.server().execute(() -> handleUpdateGhostPos(context.player(), payload)));
+
+		PayloadTypeRegistry.playC2S().register(ConfirmGhostPayload.ID, ConfirmGhostPayload.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(ConfirmGhostPayload.ID, (payload, context) ->
+				context.server().execute(() -> handleConfirmGhost(context.player())));
+
+		PayloadTypeRegistry.playC2S().register(CancelGhostPayload.ID, CancelGhostPayload.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(CancelGhostPayload.ID, (payload, context) ->
+				context.server().execute(() -> handleCancelGhost(context.player())));
+
+		PayloadTypeRegistry.playS2C().register(ResourceSyncPayload.ID, ResourceSyncPayload.CODEC);
+		PayloadTypeRegistry.playS2C().register(GhostStatePayload.ID, GhostStatePayload.CODEC);
+
+		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
+				server.execute(() -> handlePlayerJoin(handler.getPlayer())));
 
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickMovement);
-		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickTurnAdvance);
+		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickLumberjacks);
+		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickCarriers);
+
+		CommandRegistrationCallback.EVENT.register((dispatcher, registry, env) ->
+				dispatcher.register(Commands.literal("civcraft")
+						.then(Commands.literal("help").executes(ctx -> {
+							ServerPlayer p = ctx.getSource().getPlayer();
+							if (p != null) {
+								p.sendSystemMessage(Component.literal(
+										"§6CivCraft: свои постройки §r\n" +
+										"§71. /give @p structure_block\n" +
+										"§72. В блоке — Save Mode, Name: §ecivcraft:townhall§7 (или §ecivcraft:smithy§7, §ecivcraft:sawmill§7)\n" +
+										"§73. Укажи размеры и позицию — нажми Save\n" +
+										"§74. Перезайди в мир — мод применит твою постройку"));
+							}
+							return 1;
+						}))));
 
 		LOGGER.info("[CivCraft] Registries loaded");
 	}
 
-	/** Offset from the town hall spire to where newly spawned settlers stand. */
-	public static final int SPAWN_SOUTH_OFFSET = 4;
+	/**
+	 * Try to place a player-saved structure template (vanilla structure-block
+	 * format) at {@code base}. Returns true if a template was found and placed.
+	 * Logs within the placed volume are added to PROTECTED_LOGS so lumberjacks
+	 * won't chop them.
+	 */
+	private static boolean placeFromTemplate(ServerLevel level, BlockPos base, String name) {
+		var mgr = level.getStructureManager();
+		Identifier id = Identifier.fromNamespaceAndPath(MOD_ID, name);
+		var opt = mgr.get(id);
+		if (opt.isEmpty()) return false;
+		StructureTemplate tpl = opt.get();
+		StructurePlaceSettings settings = new StructurePlaceSettings();
+		tpl.placeInWorld(level, base, base, settings, level.getRandom(), 2);
+		net.minecraft.core.Vec3i size = tpl.getSize();
+		for (int x = 0; x < size.getX(); x++) {
+			for (int y = 0; y < size.getY(); y++) {
+				for (int z = 0; z < size.getZ(); z++) {
+					BlockPos p = base.offset(x, y, z);
+					if (isLog(level, p)) PROTECTED_LOGS.add(p.immutable());
+				}
+			}
+		}
+		return true;
+	}
+
+	private static void handlePlayerJoin(ServerPlayer player) {
+		ServerLevel level = player.level() instanceof ServerLevel sl ? sl : null;
+		if (level == null) return;
+		int[] starting = {50, 100, 50, 0, 0, 0};
+		PLAYER_RESOURCES.put(player.getUUID(), starting);
+		sendResources(player, starting);
+
+		BlockPos at = player.blockPosition();
+		BlockPos settler = findClearGround(level, at.offset(-4, 0, 0));
+		BlockPos builder = findClearGround(level, at.offset(4, 0, 0));
+		com.civcraft.item.SettlerCharterItem.spawnSquadAt(level, settler);
+		com.civcraft.item.SettlerCharterItem.spawnBuilderSquadAt(level, builder);
+		LOGGER.info("[CivCraft] Starter squads spawned for {} near {}", player.getName().getString(), at);
+	}
+
+	private static BlockPos findClearGround(ServerLevel level, BlockPos near) {
+		int gy = level.getHeight(Heightmap.Types.WORLD_SURFACE, near.getX(), near.getZ());
+		return new BlockPos(near.getX(), gy, near.getZ());
+	}
+
+	private static void sendResources(ServerPlayer player, int[] r) {
+		ServerPlayNetworking.send(player,
+				new ResourceSyncPayload(r[0], r[1], r[2], r[3], r[4], r[5]));
+	}
+
+	private static void handleSpawnGhost(ServerPlayer player, SpawnGhostPayload p) {
+		if (!(player.level() instanceof ServerLevel level)) return;
+		if (PENDING_GHOSTS.containsKey(player.getUUID())) {
+			player.displayClientMessage(Component.literal("§cУ тебя уже есть активный призрак. Подтверди или отмени его."), true);
+			return;
+		}
+		BlockPos p0 = groundAt(level, p.pos());
+		int target = (p.kind() == SpawnGhostPayload.KIND_TOWNHALL) ? 0 : DELIVERY_TRIPS;
+		GhostBuilding g = new GhostBuilding(player.getUUID(), p.kind(), p0, target, p.units());
+		PENDING_GHOSTS.put(player.getUUID(), g);
+		sendGhostState(player, g);
+	}
+
+	private static void handleUpdateGhostPos(ServerPlayer player, UpdateGhostPosPayload p) {
+		GhostBuilding g = PENDING_GHOSTS.get(player.getUUID());
+		if (g == null || g.confirmed) return;
+		if (!(player.level() instanceof ServerLevel level)) return;
+		g.pos = groundAt(level, p.pos());
+		sendGhostState(player, g);
+	}
+
+	private static void handleConfirmGhost(ServerPlayer player) {
+		GhostBuilding g = PENDING_GHOSTS.get(player.getUUID());
+		if (g == null || g.confirmed) return;
+		if (!(player.level() instanceof ServerLevel level)) return;
+
+		if (g.kind == SpawnGhostPayload.KIND_TOWNHALL) {
+			// Settlers founded: instant build, they vanish.
+			for (UUID u : g.units) {
+				Entity e = level.getEntity(u);
+				if (e != null) e.discard();
+				MOVE_TARGETS.remove(u);
+			}
+			buildTownHall(level, g.pos);
+			PENDING_GHOSTS.remove(player.getUUID());
+			sendGhostCleared(player);
+			player.displayClientMessage(Component.literal("§6Ратуша заложена."), true);
+		} else {
+			// Builder ghost: move to ACTIVE_BUILDS so the player can queue new
+			// ghosts while this one finishes. Carriers reference the build directly.
+			g.confirmed = true;
+			PENDING_GHOSTS.remove(player.getUUID());
+			ACTIVE_BUILDS.add(g);
+			for (UUID u : g.units) {
+				if (level.getEntity(u) != null) {
+					CARRIERS.put(u, new CarrierJob(g));
+				}
+			}
+			sendGhostCleared(player);  // unblock UI — player can now spawn another ghost
+			player.displayClientMessage(Component.literal("§6Стройка началась. Строители носят ресурсы..."), true);
+		}
+	}
+
+	private static void handleCancelGhost(ServerPlayer player) {
+		GhostBuilding g = PENDING_GHOSTS.remove(player.getUUID());
+		if (g == null) return;
+		// Detach any carriers still on this job.
+		for (UUID u : g.units) CARRIERS.remove(u);
+		sendGhostCleared(player);
+	}
+
+	private static void sendGhostState(ServerPlayer player, GhostBuilding g) {
+		ServerPlayNetworking.send(player, new GhostStatePayload(
+				g.kind, g.pos.getX(), g.pos.getY(), g.pos.getZ(),
+				g.progress, g.target, g.confirmed));
+	}
+
+	private static void sendGhostCleared(ServerPlayer player) {
+		ServerPlayNetworking.send(player, GhostStatePayload.cleared());
+	}
+
+	private static BlockPos groundAt(ServerLevel level, BlockPos p) {
+		int gy = level.getHeight(Heightmap.Types.WORLD_SURFACE, p.getX(), p.getZ());
+		return new BlockPos(p.getX(), gy, p.getZ());
+	}
+
+	private static void tickCarriers(net.minecraft.server.MinecraftServer server) {
+		if (CARRIERS.isEmpty()) return;
+		for (var it = CARRIERS.entrySet().iterator(); it.hasNext(); ) {
+			var entry = it.next();
+			UUID carrierId = entry.getKey();
+			CarrierJob job = entry.getValue();
+			GhostBuilding g = job.target;
+			if (g == null || !ACTIVE_BUILDS.contains(g)) { it.remove(); continue; }
+
+			Entity e = null;
+			ServerLevel lv = null;
+			for (ServerLevel sl : server.getAllLevels()) {
+				Entity eh = sl.getEntity(carrierId);
+				if (eh != null) { e = eh; lv = sl; break; }
+			}
+			if (e == null) { it.remove(); continue; }
+
+			switch (job.phase) {
+				case TO_HALL -> {
+					BlockPos hall = findNearestTownHall(lv, e.blockPosition());
+					if (hall == null) return;
+					if (stepToward(lv, e, hall, 1.5)) {
+						job.phase = CarrierPhase.WAIT_HALL;
+						job.waitTicks = CARRIER_WAIT_TICKS;
+					}
+				}
+				case WAIT_HALL -> {
+					if (--job.waitTicks <= 0) job.phase = CarrierPhase.TO_GHOST;
+				}
+				case TO_GHOST -> {
+					if (stepToward(lv, e, g.pos, 1.5)) {
+						job.phase = CarrierPhase.WAIT_GHOST;
+						job.waitTicks = CARRIER_WAIT_TICKS;
+					}
+				}
+				case WAIT_GHOST -> {
+					if (--job.waitTicks <= 0) {
+						g.progress++;
+						if (g.progress >= g.target) {
+							completeBuilding(lv, g);
+							e.discard();  // one builder consumed on completion
+							it.remove();
+							ACTIVE_BUILDS.remove(g);
+							// Detach any other carriers — this build is done.
+							for (var it2 = CARRIERS.entrySet().iterator(); it2.hasNext(); ) {
+								if (it2.next().getValue().target == g) it2.remove();
+							}
+						} else {
+							job.phase = CarrierPhase.TO_HALL;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	private static BlockPos findNearestTownHall(ServerLevel lv, BlockPos from) {
+		int r = 64;
+		BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+		BlockPos best = null;
+		double bestD2 = Double.MAX_VALUE;
+		for (int dx = -r; dx <= r; dx += 2) {
+			for (int dz = -r; dz <= r; dz += 2) {
+				int gy = lv.getHeight(Heightmap.Types.WORLD_SURFACE, from.getX() + dx, from.getZ() + dz);
+				for (int dy = -4; dy <= 10; dy++) {
+					m.set(from.getX() + dx, gy + dy, from.getZ() + dz);
+					if (lv.getBlockState(m).getBlock() == ModBlocks.TOWN_HALL) {
+						double d2 = dx*dx + dz*dz;
+						if (d2 < bestD2) { bestD2 = d2; best = m.immutable(); }
+						break;
+					}
+				}
+			}
+		}
+		return best;
+	}
+
+	private static void completeBuilding(ServerLevel level, GhostBuilding g) {
+		if (g.kind == SpawnGhostPayload.KIND_SMITHY) {
+			buildSmithy(level, g.pos);
+		} else if (g.kind == SpawnGhostPayload.KIND_SAWMILL) {
+			buildSawmill(level, g.pos);
+			for (int i = 0; i < 2; i++) {
+				var lj = com.civcraft.item.SettlerCharterItem.spawnLumberjackAt(
+						level, g.pos.offset(i - 1, 1, 2));
+				if (lj != null) LUMBERJACKS.put(lj.getUUID(), new LumberjackJob(g.pos, g.owner));
+			}
+		}
+	}
+
+	private static void buildSmithy(ServerLevel level, BlockPos base) {
+		if (placeFromTemplate(level, base, "smithy")) return;
+		var iron = ModBlocks.SMITHY.defaultBlockState();
+		for (int x = -1; x <= 1; x++) {
+			for (int z = -1; z <= 1; z++) {
+				level.setBlockAndUpdate(base.offset(x, 0, z), iron);
+			}
+		}
+	}
+
+	private static void buildSawmill(ServerLevel level, BlockPos base) {
+		if (placeFromTemplate(level, base, "sawmill")) return;
+		var planks = ModBlocks.SAWMILL.defaultBlockState();
+		var oak = net.minecraft.world.level.block.Blocks.OAK_LOG.defaultBlockState();
+		for (int x = -1; x <= 1; x++) {
+			for (int z = -1; z <= 1; z++) {
+				level.setBlockAndUpdate(base.offset(x, 0, z), planks);
+			}
+		}
+		BlockPos[] corners = {
+				base.offset(-1, 1, -1), base.offset( 1, 1, -1),
+				base.offset(-1, 1,  1), base.offset( 1, 1,  1)
+		};
+		for (BlockPos c : corners) {
+			level.setBlockAndUpdate(c, oak);
+			PROTECTED_LOGS.add(c.immutable());
+		}
+	}
+
+	private static void tickLumberjacks(net.minecraft.server.MinecraftServer server) {
+		if (LUMBERJACKS.isEmpty()) return;
+		for (var it = LUMBERJACKS.entrySet().iterator(); it.hasNext(); ) {
+			var entry = it.next();
+			Entity e = null;
+			ServerLevel found = null;
+			for (ServerLevel lv : server.getAllLevels()) {
+				Entity eh = lv.getEntity(entry.getKey());
+				if (eh != null) { e = eh; found = lv; break; }
+			}
+			if (e == null) { it.remove(); continue; }
+			tickLumberjack(found, e, entry.getValue(), server);
+		}
+	}
+
+	private static void tickLumberjack(ServerLevel level, Entity lj, LumberjackJob job,
+	                                   net.minecraft.server.MinecraftServer server) {
+		switch (job.phase) {
+			case TO_LOG -> {
+				if (job.target == null) {
+					job.target = findNearestLog(level, lj.blockPosition());
+					if (job.target == null) return;  // no trees nearby, idle
+				}
+				if (stepToward(level, lj, job.target, 0.8)) {
+					job.phase = WorkPhase.CHOP;
+					job.chopTicks = 0;
+				}
+			}
+			case CHOP -> {
+				job.chopTicks++;
+				if (job.chopTicks >= CHOP_DURATION_TICKS) {
+					if (job.target != null && isLog(level, job.target)
+							&& !PROTECTED_LOGS.contains(job.target)) {
+						level.setBlockAndUpdate(job.target,
+								net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+					}
+					job.target = job.home;
+					job.phase = WorkPhase.TO_HOME;
+				}
+			}
+			case TO_HOME -> {
+				if (stepToward(level, lj, job.home, 1.5)) {
+					job.phase = WorkPhase.DEPOSIT;
+				}
+			}
+			case DEPOSIT -> {
+				int[] r = PLAYER_RESOURCES.get(job.owner);
+				if (r != null) {
+					r[1] += WOOD_PER_CHOP;
+					ServerPlayer owner = server.getPlayerList().getPlayer(job.owner);
+					if (owner != null) sendResources(owner, r);
+				}
+				job.target = null;
+				job.phase = WorkPhase.TO_LOG;
+			}
+		}
+	}
+
+	private static boolean stepToward(ServerLevel level, Entity e, BlockPos target, double arriveRadius) {
+		double tx = target.getX() + 0.5;
+		double tz = target.getZ() + 0.5;
+		double dx = tx - e.getX();
+		double dz = tz - e.getZ();
+		double flat = Math.hypot(dx, dz);
+		if (flat < arriveRadius) return true;
+		double nx = e.getX() + dx / flat * LUMBERJACK_STEP;
+		double nz = e.getZ() + dz / flat * LUMBERJACK_STEP;
+		int gy = level.getHeight(Heightmap.Types.WORLD_SURFACE, (int) Math.floor(nx), (int) Math.floor(nz));
+		float yaw = (float) Math.toDegrees(Math.atan2(-dx / flat * LUMBERJACK_STEP, dz / flat * LUMBERJACK_STEP));
+		e.snapTo(nx, gy, nz, yaw, 0f);
+		return false;
+	}
+
+	private static boolean isLog(ServerLevel level, BlockPos pos) {
+		return level.getBlockState(pos).is(net.minecraft.tags.BlockTags.LOGS);
+	}
+
+	private static BlockPos findNearestLog(ServerLevel level, BlockPos origin) {
+		BlockPos best = null;
+		double bestD2 = Double.MAX_VALUE;
+		int r = LUMBERJACK_SEARCH_RADIUS;
+		BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+		for (int dx = -r; dx <= r; dx++) {
+			for (int dz = -r; dz <= r; dz++) {
+				// MOTION_BLOCKING_NO_LEAVES returns top of trunk for tree columns
+				// (skipping the leaf canopy). Scan a few blocks down from there
+				// to find the bottom-most log of the trunk we want to chop.
+				int topY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+						origin.getX() + dx, origin.getZ() + dz);
+				for (int dy = 0; dy >= -8; dy--) {
+					m.set(origin.getX() + dx, topY + dy, origin.getZ() + dz);
+					if (!isLog(level, m)) continue;
+					if (PROTECTED_LOGS.contains(m)) break;  // player building, leave whole column
+					double d2 = dx * dx + dz * dz;
+					if (d2 < bestD2) {
+						bestD2 = d2;
+						best = m.immutable();
+					}
+					break;
+				}
+			}
+		}
+		return best;
+	}
 
 	private static void handleSpawnSettlers(ServerLevel level, SpawnSettlersPayload payload) {
 		net.minecraft.core.BlockPos p = payload.pos();
@@ -92,9 +502,6 @@ public class Civcraft implements ModInitializer {
 			LOGGER.info("[CivCraft] SpawnSettlers rejected: no town hall at {}", p);
 			return;
 		}
-		// Anchor used in spawnSquad scatters units ~+2 east and around it in z,
-		// so we offset the anchor two blocks west to center the squad on
-		// (spire.x, spire.z - SPAWN_SOUTH_OFFSET).
 		int sx = p.getX() - 2;
 		int sz = p.getZ() - SPAWN_SOUTH_OFFSET;
 		int gy = level.getHeight(Heightmap.Types.WORLD_SURFACE, sx, sz);
@@ -103,76 +510,40 @@ public class Civcraft implements ModInitializer {
 		LOGGER.info("[CivCraft] Spawned settlers: spire={} anchor={}", p, anchor);
 	}
 
-	private static void handleFoundTownHall(ServerLevel level, FoundTownHallPayload payload) {
-		if (payload.units().isEmpty()) return;
-		double sx = 0, sz = 0;
-		int count = 0;
-		for (UUID u : payload.units()) {
-			Entity e = level.getEntity(u);
-			if (e == null) continue;
-			sx += e.getX();
-			sz += e.getZ();
-			count++;
-		}
-		if (count == 0) return;
-		double cx = sx / count;
-		double cz = sz / count;
-		int gy = level.getHeight(Heightmap.Types.WORLD_SURFACE,
-				(int) Math.floor(cx), (int) Math.floor(cz));
-		net.minecraft.core.BlockPos base = new net.minecraft.core.BlockPos(
-				(int) Math.floor(cx), gy, (int) Math.floor(cz));
-
-		buildTownHall(level, base);
-
-		// Settlers have a single-charge founding perk — consume them.
-		for (UUID u : payload.units()) {
-			Entity e = level.getEntity(u);
-			if (e != null) e.discard();
-		}
-		MOVE_TARGETS.keySet().removeAll(payload.units());
-		LOGGER.info("[CivCraft] Town Hall founded at {} (consumed {} units)", base, count);
-	}
-
-	/**
-	 * Lays out a small 5×5 town hall: cobblestone floor, 3-high walls with
-	 * glass-pane windows on every side, oak-plank roof, and a door opening
-	 * facing south. Intentionally simple — vanilla blocks only, hardcoded
-	 * offsets — but looks like an actual building instead of a single cube.
-	 */
 	private static void buildTownHall(ServerLevel level, net.minecraft.core.BlockPos base) {
+		if (placeFromTemplate(level, base, "townhall")) {
+			level.setBlockAndUpdate(base.offset(0, 5, 0), ModBlocks.TOWN_HALL.defaultBlockState());
+			return;
+		}
 		var cobble = net.minecraft.world.level.block.Blocks.COBBLESTONE.defaultBlockState();
 		var planks = net.minecraft.world.level.block.Blocks.OAK_PLANKS.defaultBlockState();
 		var glass  = net.minecraft.world.level.block.Blocks.GLASS_PANE.defaultBlockState();
 		var log    = net.minecraft.world.level.block.Blocks.OAK_LOG.defaultBlockState();
 		var air    = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
 
-		// Floor (y=0) + ceiling/roof (y=4)
 		for (int x = -2; x <= 2; x++) {
 			for (int z = -2; z <= 2; z++) {
 				level.setBlockAndUpdate(base.offset(x, 0, z), cobble);
 				level.setBlockAndUpdate(base.offset(x, 4, z), planks);
 			}
 		}
-		// Walls
 		for (int y = 1; y <= 3; y++) {
 			for (int x = -2; x <= 2; x++) {
 				for (int z = -2; z <= 2; z++) {
 					boolean edge = Math.abs(x) == 2 || Math.abs(z) == 2;
 					if (!edge) { level.setBlockAndUpdate(base.offset(x, y, z), air); continue; }
 					boolean corner = Math.abs(x) == 2 && Math.abs(z) == 2;
-					// Glass pane at middle height, in the center of each wall (but not door).
 					boolean isDoorColumn = (x == 0 && z == -2);
 					boolean isWindow = y == 2 && !corner && !isDoorColumn;
 					var use = corner ? log : (isWindow ? glass : cobble);
-					level.setBlockAndUpdate(base.offset(x, y, z), use);
+					BlockPos at = base.offset(x, y, z);
+					level.setBlockAndUpdate(at, use);
+					if (corner) PROTECTED_LOGS.add(at.immutable());
 				}
 			}
 		}
 		level.setBlockAndUpdate(base.offset(0, 1, -2), air);
 		level.setBlockAndUpdate(base.offset(0, 2, -2), air);
-
-		// Spire on top: the one block that identifies this as a CivCraft town.
-		// Selection system uses it as the building marker.
 		level.setBlockAndUpdate(base.offset(0, 5, 0), ModBlocks.TOWN_HALL.defaultBlockState());
 	}
 
@@ -194,39 +565,10 @@ public class Civcraft implements ModInitializer {
 					(int) Math.floor(tx), (int) Math.floor(tz));
 
 			MOVE_TARGETS.put(u, new Vec3(tx, gy, tz));
-			// Keep AI off — we are fully in control of position.
 			mob.setNoAi(true);
 			mob.getNavigation().stop();
 			i++;
 		}
-	}
-
-	/** State for the "next turn" animation — a fast day→night→day sweep. */
-	private static final int TURN_DURATION_TICKS = 60;
-	private static int turnTicksLeft = 0;
-
-	private static void beginTurnAdvance(net.minecraft.server.MinecraftServer server) {
-		if (turnTicksLeft > 0) return; // already playing transition
-		turnTicksLeft = TURN_DURATION_TICKS;
-	}
-
-	private static void tickTurnAdvance(net.minecraft.server.MinecraftServer server) {
-		if (turnTicksLeft <= 0) return;
-		int elapsed = TURN_DURATION_TICKS - turnTicksLeft;
-		// Map elapsed ticks into a full 0..24000 minecraft-day sweep, ending at
-		// morning (6000) once the counter reaches zero.
-		long daytime;
-		if (turnTicksLeft == 1) {
-			daytime = 6000L;  // snap to morning
-		} else {
-			double t = (double) elapsed / TURN_DURATION_TICKS;
-			daytime = 6000L + (long) (t * 24000.0);  // 6000 → 30000, %24000
-		}
-		long finalTime = ((daytime % 24000L) + 24000L) % 24000L;
-		for (ServerLevel level : server.getAllLevels()) {
-			level.setDayTime(finalTime);
-		}
-		turnTicksLeft--;
 	}
 
 	private static void tickMovement(net.minecraft.server.MinecraftServer server) {
@@ -245,10 +587,7 @@ public class Civcraft implements ModInitializer {
 			double dx = target.x - pos.x;
 			double dz = target.z - pos.z;
 			double flat = Math.hypot(dx, dz);
-			if (flat < ARRIVE_RADIUS) {
-				it.remove();
-				continue;
-			}
+			if (flat < ARRIVE_RADIUS) { it.remove(); continue; }
 
 			double stepX = dx / flat * STEP_PER_TICK;
 			double stepZ = dz / flat * STEP_PER_TICK;

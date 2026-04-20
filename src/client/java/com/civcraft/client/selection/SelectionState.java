@@ -15,7 +15,7 @@ import java.util.UUID;
  * Exactly one kind is active at a time; picking the other clears the first.
  */
 public final class SelectionState {
-	public enum Kind { NONE, SQUAD, BUILDING }
+	public enum Kind { NONE, SQUAD, BUILDING, BUILDER_SQUAD }
 
 	public static boolean dragging = false;
 	public static double startX = 0, startY = 0, currentX = 0, currentY = 0;
@@ -40,10 +40,14 @@ public final class SelectionState {
 	}
 
 	public static void setSquad(Set<UUID> uuids) {
+		setSquad(uuids, Kind.SQUAD);
+	}
+
+	public static void setSquad(Set<UUID> uuids, Kind kindIfNonEmpty) {
 		selectedBuilding = null;
 		selected.clear();
 		selected.addAll(uuids);
-		kind = uuids.isEmpty() ? Kind.NONE : Kind.SQUAD;
+		kind = uuids.isEmpty() ? Kind.NONE : kindIfNonEmpty;
 	}
 
 	public static void setBuilding(BlockPos pos) {

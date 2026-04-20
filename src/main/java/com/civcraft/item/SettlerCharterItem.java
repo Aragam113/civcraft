@@ -18,6 +18,8 @@ import net.minecraft.world.level.Level;
 
 public class SettlerCharterItem extends Item {
 	private static final String[] SQUAD_NAMES = {"⚔ Старейшина", "⚔ Поселенец", "⚔ Колонист"};
+	private static final String[] BUILDER_NAMES = {"⛏ Строитель", "⛏ Строитель", "⛏ Строитель"};
+	public static final String LUMBERJACK_NAME = "🪓 Лесоруб";
 
 	public SettlerCharterItem(Properties properties) {
 		super(properties);
@@ -90,6 +92,35 @@ public class SettlerCharterItem extends Item {
 			tagAsSquadMember(mule);
 			world.addFreshEntity(mule);
 		}
+	}
+
+	public static void spawnBuilderSquadAt(ServerLevel world, BlockPos anchor) {
+		double cx = anchor.getX() + 0.5;
+		double cy = anchor.getY();
+		double cz = anchor.getZ() + 0.5;
+		for (int i = 0; i < BUILDER_NAMES.length; i++) {
+			Villager v = EntityType.VILLAGER.create(world, EntitySpawnReason.MOB_SUMMONED);
+			if (v == null) continue;
+			double vx = cx + (i - 1) * 1.1;
+			v.snapTo(vx, cy, cz, 0f, 0f);
+			v.setCustomName(Component.literal(BUILDER_NAMES[i]));
+			v.setCustomNameVisible(true);
+			v.setPersistenceRequired();
+			tagAsSquadMember(v);
+			world.addFreshEntity(v);
+		}
+	}
+
+	public static Villager spawnLumberjackAt(ServerLevel world, BlockPos anchor) {
+		Villager v = EntityType.VILLAGER.create(world, EntitySpawnReason.MOB_SUMMONED);
+		if (v == null) return null;
+		v.snapTo(anchor.getX() + 0.5, anchor.getY(), anchor.getZ() + 0.5, 0f, 0f);
+		v.setCustomName(Component.literal(LUMBERJACK_NAME));
+		v.setCustomNameVisible(true);
+		v.setPersistenceRequired();
+		tagAsSquadMember(v);
+		world.addFreshEntity(v);
+		return v;
 	}
 
 	private static void tagAsSquadMember(net.minecraft.world.entity.Entity e) {

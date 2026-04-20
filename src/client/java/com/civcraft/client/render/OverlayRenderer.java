@@ -108,10 +108,123 @@ public final class OverlayRenderer {
 			drawRing(matrices, buffer, lx1, ly1 + 0.05, lz1, 0.5f, 255, 255, 255, 255);
 		}
 
-		// Banners last: Font.drawInBatch internally flushes buffers; doing it
-		// after all LINES drawing avoids a "Not building!" crash on the next
-		// addVertex call.
+		// Ghost building outline (wireframe + gizmos — still LINES phase).
+		drawGhostLines(matrices, buffer, cam);
+
+		// Switching render types invalidates the previous buffer, so real-block
+		// ghost preview goes AFTER all LINES drawing is complete.
+		if (com.civcraft.client.building.GhostState.isActive()) {
+			drawGhostBlocks(ctx, mc, cam);
+		}
+
+		// Banners last: Font.drawInBatch internally flushes buffers.
 		drawSquadBanners(ctx, mc, level, cam);
+	}
+
+	private static void drawGhostLines(PoseStack matrices, VertexConsumer buffer, Vec3 cam) {
+		if (!com.civcraft.client.building.GhostState.isActive()) return;
+		boolean confirmed = com.civcraft.client.building.GhostState.confirmed;
+
+		// Interactive gizmos — only before the build is committed.
+		if (confirmed) return;
+		for (com.civcraft.client.building.GhostState.Gizmo giz :
+				com.civcraft.client.building.GhostState.Gizmo.values()) {
+			Vec3 wp = com.civcraft.client.building.GhostState.gizmoPos(giz);
+			double gx = wp.x - cam.x;
+			double gy = wp.y - cam.y;
+			double gz = wp.z - cam.z;
+			switch (giz) {
+				case ARROW_N -> drawArrow(matrices, buffer, gx, gy, gz,  0, -1, 212, 175, 55);
+				case ARROW_S -> drawArrow(matrices, buffer, gx, gy, gz,  0,  1, 212, 175, 55);
+				case ARROW_W -> drawArrow(matrices, buffer, gx, gy, gz, -1,  0, 212, 175, 55);
+				case ARROW_E -> drawArrow(matrices, buffer, gx, gy, gz,  1,  0, 212, 175, 55);
+			}
+		}
+	}
+
+	private static void drawGhostBlocks(net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext ctx,
+	                                    Minecraft mc, Vec3 cam) {
+		var dispatcher = mc.getBlockRenderer();
+		PoseStack matrices = ctx.matrices();
+		MultiBufferSource consumers = ctx.consumers();
+		if (consumers == null) return;
+		// Wrap so the block renderer emits all quads into a translucent buffer
+		// with ~50% alpha — gives a proper "hologram" look using real textures.
+		GhostBufferSource ghostBuf = new GhostBufferSource(consumers, 120);
+		double px = com.civcraft.client.building.GhostState.pos.getX();
+		double py = com.civcraft.client.building.GhostState.pos.getY();
+		double pz = com.civcraft.client.building.GhostState.pos.getZ();
+		for (var gb : com.civcraft.client.building.GhostState.shape()) {
+			matrices.pushPose();
+			matrices.translate(
+					px + gb.dx() - cam.x,
+					py + gb.dy() - cam.y,
+					pz + gb.dz() - cam.z);
+			dispatcher.renderSingleBlock(gb.state(), matrices, ghostBuf,
+					0x00F000F0, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY);
+			matrices.popPose();
+		}
+	}
+
+	private static void drawCubeEdges(PoseStack m, VertexConsumer buf,
+	                                  double x0, double y0, double z0,
+	                                  double x1, double y1, double z1,
+	                                  int r, int g, int b, int a) {
+		drawLine(m, buf, x0, y0, z0, x1, y0, z0, r, g, b, a);
+		drawLine(m, buf, x1, y0, z0, x1, y0, z1, r, g, b, a);
+		drawLine(m, buf, x1, y0, z1, x0, y0, z1, r, g, b, a);
+		drawLine(m, buf, x0, y0, z1, x0, y0, z0, r, g, b, a);
+		drawLine(m, buf, x0, y1, z0, x1, y1, z0, r, g, b, a);
+		drawLine(m, buf, x1, y1, z0, x1, y1, z1, r, g, b, a);
+		drawLine(m, buf, x1, y1, z1, x0, y1, z1, r, g, b, a);
+		drawLine(m, buf, x0, y1, z1, x0, y1, z0, r, g, b, a);
+		drawLine(m, buf, x0, y0, z0, x0, y1, z0, r, g, b, a);
+		drawLine(m, buf, x1, y0, z0, x1, y1, z0, r, g, b, a);
+		drawLine(m, buf, x1, y0, z1, x1, y1, z1, r, g, b, a);
+		drawLine(m, buf, x0, y0, z1, x0, y1, z1, r, g, b, a);
+	}
+
+	/** Triangle arrowhead pointing outward along (dx, dz) on a flat XZ plane. */
+	private static void drawArrow(PoseStack m, VertexConsumer buf,
+	                              double tipX, double tipY, double tipZ,
+	                              double dx, double dz, int r, int g, int b) {
+		// The given (tipX, tipY, tipZ) is the anchor; place tip 0.8 blocks out.
+		double tx = tipX + dx * 0.8;
+		double tz = tipZ + dz * 0.8;
+		double bx = tipX - dx * 0.4;
+		double bz = tipZ - dz * 0.4;
+		double perpX = dz;
+		double perpZ = -dx;
+		double lx = bx + perpX * 0.5;
+		double lz = bz + perpZ * 0.5;
+		double rx = bx - perpX * 0.5;
+		double rz = bz - perpZ * 0.5;
+		// Triangle outline (tip → left, tip → right, left → right)
+		drawLine(m, buf, tx, tipY, tz, lx, tipY, lz, r, g, b, 255);
+		drawLine(m, buf, tx, tipY, tz, rx, tipY, rz, r, g, b, 255);
+		drawLine(m, buf, lx, tipY, lz, rx, tipY, rz, r, g, b, 255);
+		// Stem: small line from center to tip for extra visibility.
+		drawLine(m, buf, bx, tipY, bz, tx, tipY, tz, r, g, b, 255);
+	}
+
+	/** Two-stroke V-shape drawn on a flat XZ plane. */
+	private static void drawCheck(PoseStack m, VertexConsumer buf,
+	                              double cx, double cy, double cz, int r, int g, int b) {
+		// ✓ in XZ plane: a short left leg, then a longer right leg going up-right.
+		drawLine(m, buf, cx - 0.4, cy, cz - 0.1, cx - 0.1, cy, cz + 0.3, r, g, b, 255);
+		drawLine(m, buf, cx - 0.1, cy, cz + 0.3, cx + 0.5, cy, cz - 0.4, r, g, b, 255);
+		// Thicker: double-draw with a slight vertical offset.
+		drawLine(m, buf, cx - 0.4, cy + 0.05, cz - 0.1, cx - 0.1, cy + 0.05, cz + 0.3, r, g, b, 255);
+		drawLine(m, buf, cx - 0.1, cy + 0.05, cz + 0.3, cx + 0.5, cy + 0.05, cz - 0.4, r, g, b, 255);
+	}
+
+	/** X drawn on a flat XZ plane. */
+	private static void drawCross(PoseStack m, VertexConsumer buf,
+	                              double cx, double cy, double cz, int r, int g, int b) {
+		drawLine(m, buf, cx - 0.4, cy, cz - 0.4, cx + 0.4, cy, cz + 0.4, r, g, b, 255);
+		drawLine(m, buf, cx - 0.4, cy, cz + 0.4, cx + 0.4, cy, cz - 0.4, r, g, b, 255);
+		drawLine(m, buf, cx - 0.4, cy + 0.05, cz - 0.4, cx + 0.4, cy + 0.05, cz + 0.4, r, g, b, 255);
+		drawLine(m, buf, cx - 0.4, cy + 0.05, cz + 0.4, cx + 0.4, cy + 0.05, cz - 0.4, r, g, b, 255);
 	}
 
 	private static void drawSquadBanners(net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext ctx,

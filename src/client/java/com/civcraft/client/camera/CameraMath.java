@@ -2,6 +2,8 @@ package com.civcraft.client.camera;
 
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
@@ -61,6 +63,33 @@ public final class CameraMath {
 	 * Cast a ray from the cursor and find where it meets y = {@code planeY}.
 	 * Returns null if the ray is parallel to the plane or pointing away.
 	 */
+	/**
+	 * True block raycast from the camera through the cursor. Hits the first
+	 * solid block the ray meets — handles hills, valleys, and structures
+	 * correctly where {@link #cursorToGround} (a flat plane) would lie.
+	 */
+	public static Vec3 cursorToBlock(Minecraft mc, double mouseX, double mouseY) {
+		if (mc.level == null) return null;
+		Matrix4f vp = viewProjection(mc);
+		Matrix4f inv = new Matrix4f(vp).invert();
+		int w = mc.getWindow().getWidth();
+		int h = mc.getWindow().getHeight();
+		float ndcX = (float) (2.0 * mouseX / w - 1.0);
+		float ndcY = (float) (1.0 - 2.0 * mouseY / h);
+		Vector4f near = inv.transform(new Vector4f(ndcX, ndcY, -1f, 1f));
+		Vector4f far  = inv.transform(new Vector4f(ndcX, ndcY,  1f, 1f));
+		near.div(near.w);
+		far.div(far.w);
+		Vec3 start = new Vec3(near.x, near.y, near.z);
+		Vec3 end   = new Vec3(far.x, far.y, far.z);
+		var hit = mc.level.clip(new ClipContext(start, end,
+				ClipContext.Block.OUTLINE,
+				ClipContext.Fluid.NONE,
+				net.minecraft.world.phys.shapes.CollisionContext.empty()));
+		if (hit.getType() == HitResult.Type.MISS) return null;
+		return hit.getLocation();
+	}
+
 	public static Vec3 cursorToGround(Minecraft mc, double mouseX, double mouseY, double planeY) {
 		Matrix4f vp = viewProjection(mc);
 		Matrix4f inv = new Matrix4f(vp).invert();

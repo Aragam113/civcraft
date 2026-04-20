@@ -21,6 +21,16 @@ public final class ModBlocks {
 			TownHallBlock::new,
 			BlockBehaviour.Properties.of().mapColor(MapColor.STONE).strength(5.0f, 6.0f)
 	);
+	public static final Block SMITHY = register(
+			"smithy",
+			Block::new,
+			BlockBehaviour.Properties.of().mapColor(MapColor.METAL).strength(4.0f, 6.0f)
+	);
+	public static final Block SAWMILL = register(
+			"sawmill",
+			Block::new,
+			BlockBehaviour.Properties.of().mapColor(MapColor.WOOD).strength(3.0f, 4.0f)
+	);
 
 	private ModBlocks() {}
 

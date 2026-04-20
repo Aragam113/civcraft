@@ -11,6 +11,8 @@ import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -24,28 +26,55 @@ import java.util.UUID;
 
 public class CivcraftClient implements ClientModInitializer {
 	private static KeyMapping toggleCameraKey;
-	private static KeyMapping rotateLeftKey;
-	private static KeyMapping rotateRightKey;
 	private static KeyMapping perkKey;
-	private static KeyMapping nextTurnKey;
+	private static KeyMapping perk2Key;
 
 	private boolean prevLmb = false;
 	private boolean prevRmb = false;
+	private boolean prevMmb = false;
+	private double mmbStartX, mmbStartY;
+	private double mmbStartAnchorX, mmbStartAnchorZ;
+	private float mmbStartYaw;
+	private boolean mmbWasRotate;
+	private int ticksSinceJoin = -1;  // -1 = not joined yet
 
 	@Override
 	public void onInitializeClient() {
 		Civcraft.LOGGER.info("[CivCraft] Initializing client-side systems");
 
 		toggleCameraKey = bind("key.civcraft.toggle_camera", GLFW.GLFW_KEY_C);
-		rotateLeftKey   = bind("key.civcraft.rotate_left",  GLFW.GLFW_KEY_Z);
-		rotateRightKey  = bind("key.civcraft.rotate_right", GLFW.GLFW_KEY_X);
 		perkKey         = bind("key.civcraft.perk",         GLFW.GLFW_KEY_Q);
-		nextTurnKey     = bind("key.civcraft.next_turn",    GLFW.GLFW_KEY_SPACE);
+		perk2Key        = bind("key.civcraft.perk2",        GLFW.GLFW_KEY_E);
 
 		ClientTickEvents.END_CLIENT_TICK.register(this::clientTick);
 		CivcraftHud.register();
 		com.civcraft.client.render.OverlayRenderer.register();
 		EntityRendererRegistry.register(ModEntities.SETTLER, SettlerRenderer::new);
+
+		ClientPlayNetworking.registerGlobalReceiver(
+				com.civcraft.network.ResourceSyncPayload.ID, (payload, context) -> {
+					com.civcraft.client.resource.ResourceState.food  = payload.food();
+					com.civcraft.client.resource.ResourceState.wood  = payload.wood();
+					com.civcraft.client.resource.ResourceState.stone = payload.stone();
+					com.civcraft.client.resource.ResourceState.coal  = payload.coal();
+					com.civcraft.client.resource.ResourceState.iron  = payload.iron();
+					com.civcraft.client.resource.ResourceState.gold  = payload.gold();
+				});
+
+		ClientPlayNetworking.registerGlobalReceiver(
+				com.civcraft.network.GhostStatePayload.ID, (payload, context) -> {
+					if (payload.kind() == com.civcraft.network.GhostStatePayload.KIND_NONE) {
+						com.civcraft.client.building.GhostState.clear();
+					} else {
+						com.civcraft.client.building.GhostState.apply(
+								payload.kind(), payload.pos(),
+								payload.progress(), payload.target(), payload.confirmed());
+					}
+				});
+
+		ClientPlayConnectionEvents.JOIN.register((handler, sender, mc) -> {
+			ticksSinceJoin = 0;
+		});
 	}
 
 	private static KeyMapping bind(String key, int glfwKey) {
@@ -54,54 +83,108 @@ public class CivcraftClient implements ClientModInitializer {
 	}
 
 	private void clientTick(Minecraft client) {
+		if (ticksSinceJoin >= 0) {
+			ticksSinceJoin++;
+			// Auto-enter RTS once the world has had 2s to load. Only auto-toggle
+			// if the user hasn't already flipped it manually.
+			if (ticksSinceJoin == 40 && !TopDownMode.active && client.player != null) {
+				TopDownMode.toggle();
+				onIsoToggled(client);
+			}
+		}
 		while (toggleCameraKey.consumeClick()) {
 			if (client.player == null) continue;
 			TopDownMode.toggle();
 			onIsoToggled(client);
 		}
 		if (TopDownMode.active) {
+			// Snapshot prev state so the camera mixin can interpolate this tick's
+			// motion into smooth per-frame movement between input ticks.
+			TopDownMode.snapshot();
 			panCameraByKeys(client);
-			rotateByKeys();
+			pollMiddleMouse(client);
 			holdCursorFree(client);
 			pollMouseButtons(client);
 			syncGlowWithSelection(client);
 			handlePerkKey(client);
-			handleNextTurnKey(client);
+			followAnchorWithPlayer(client);
 		}
 	}
 
-	private void handleNextTurnKey(Minecraft client) {
-		while (nextTurnKey.consumeClick()) {
-			sendNextTurn(client);
-		}
+	/**
+	 * Keep the server-side player hovering around the camera anchor so entity
+	 * trackers and chunk loading follow what the user is actually looking at.
+	 * Uses absMoveTo to preserve rotation, and only fires when the player is
+	 * fully spawned and the target chunk is already loaded — both guards avoid
+	 * the null-camera crash seen when the world is still initializing.
+	 */
+	private void followAnchorWithPlayer(Minecraft client) {
+		LocalPlayer player = client.player;
+		if (player == null || !player.isAlive()) return;
+		if (client.level == null) return;
+		if (player.connection == null) return;
+		int cx = (int) Math.floor(TopDownMode.anchorX);
+		int cz = (int) Math.floor(TopDownMode.anchorZ);
+		if (!client.level.hasChunk(cx >> 4, cz >> 4)) return;
+		double dx = TopDownMode.anchorX - player.getX();
+		double dz = TopDownMode.anchorZ - player.getZ();
+		if (dx * dx + dz * dz < 1.0) return;
+		player.snapTo(TopDownMode.anchorX, player.getY(), TopDownMode.anchorZ,
+				player.getYRot(), player.getXRot());
 	}
 
-	private void sendNextTurn(Minecraft client) {
-		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(new com.civcraft.network.NextTurnPayload());
-		com.civcraft.client.hud.CivcraftHud.startTurnAnimation();
-		if (client.player != null) {
-			client.player.displayClientMessage(
-					Component.literal("§eНаступает ночь..."), true);
-		}
+	private void openGameMenu(Minecraft client) {
+		client.setScreen(new com.civcraft.client.gui.CivcraftMenuScreen());
 	}
 
 	private void handlePerkKey(Minecraft client) {
 		while (perkKey.consumeClick()) {
-			firePerk(client);
+			if (com.civcraft.client.building.GhostState.isActive()
+					&& !com.civcraft.client.building.GhostState.confirmed) {
+				cancelGhostWithRefund();
+				continue;
+			}
+			firePerk(client, 0);
+		}
+		while (perk2Key.consumeClick()) {
+			firePerk(client, 1);
 		}
 	}
 
-	private void firePerk(Minecraft client) {
-		switch (SelectionState.kind) {
-			case SQUAD -> {
-				net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
-						new com.civcraft.network.FoundTownHallPayload(
-								new java.util.ArrayList<>(SelectionState.selected)));
-				SelectionState.clearAll();
+	private void firePerk(Minecraft client, int slot) {
+		if (com.civcraft.client.building.GhostState.isActive()) {
+			return;  // already have a ghost; user must confirm/cancel first
+		}
+		if (SelectionState.kind == SelectionState.Kind.BUILDER_SQUAD) {
+			byte kind = slot == 1
+					? com.civcraft.network.SpawnGhostPayload.KIND_SAWMILL
+					: com.civcraft.network.SpawnGhostPayload.KIND_SMITHY;
+			if (SelectionState.selected.isEmpty()) {
 				if (client.player != null) {
 					client.player.displayClientMessage(
-							Component.literal("§6Ратуша закладывается..."), true);
+							Component.literal("§cНет строителей — отряд исчерпан"), true);
 				}
+				return;
+			}
+			sendSpawnGhost(client, kind, SelectionState.selected);
+			return;
+		}
+		switch (SelectionState.kind) {
+			case SQUAD -> {
+				if (!com.civcraft.client.resource.ResourceState.canAffordTownHall()) {
+					if (client.player != null) {
+						client.player.displayClientMessage(Component.literal(
+								String.format("§cНе хватает ресурсов для ратуши (нужно: %d еды, %d дерева, %d камня)",
+										com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD,
+										com.civcraft.client.resource.ResourceState.TOWN_HALL_WOOD,
+										com.civcraft.client.resource.ResourceState.TOWN_HALL_STONE)), true);
+					}
+					return;
+				}
+				com.civcraft.client.resource.ResourceState.deductTownHall();
+				sendSpawnGhost(client, com.civcraft.network.SpawnGhostPayload.KIND_TOWNHALL,
+						SelectionState.selected);
+				SelectionState.clearAll();
 			}
 			case BUILDING -> {
 				if (SelectionState.selectedBuilding == null) return;
@@ -132,6 +215,37 @@ public class CivcraftClient implements ClientModInitializer {
 		}
 	}
 
+	private void sendSpawnGhost(Minecraft client, byte kind, java.util.Set<UUID> units) {
+		if (client.level == null) return;
+		// Initial ghost pos: centroid of the contributing squad.
+		double sx = 0, sz = 0;
+		int n = 0;
+		for (UUID u : units) {
+			Entity e = null;
+			for (Entity entity : client.level.entitiesForRendering()) {
+				if (entity.getUUID().equals(u)) { e = entity; break; }
+			}
+			if (e != null) { sx += e.getX(); sz += e.getZ(); n++; }
+		}
+		int px, pz;
+		if (n > 0) {
+			px = (int) Math.floor(sx / n);
+			pz = (int) Math.floor(sz / n);
+		} else {
+			px = (int) TopDownMode.anchorX;
+			pz = (int) TopDownMode.anchorZ;
+		}
+		int py = client.level.getHeight(
+				net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, px, pz);
+		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+				new com.civcraft.network.SpawnGhostPayload(kind, px, py, pz,
+						new java.util.ArrayList<>(units)));
+		if (client.player != null) {
+			client.player.displayClientMessage(Component.literal(
+					"§6Призрак появился — удерживай ЛКМ, чтобы перетащить, ПКМ чтобы подтвердить, Q — отменить"), true);
+		}
+	}
+
 	private void pollMouseButtons(Minecraft client) {
 		long window = client.getWindow().handle();
 		boolean lmb = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
@@ -139,25 +253,68 @@ public class CivcraftClient implements ClientModInitializer {
 		double mx = client.mouseHandler.xpos();
 		double my = client.mouseHandler.ypos();
 
+		// Active unconfirmed ghost: HUD buttons > world gizmos > drag, RMB=confirm.
+		if (com.civcraft.client.building.GhostState.isActive()
+				&& !com.civcraft.client.building.GhostState.confirmed) {
+			if (lmb && !prevLmb) {
+				if (com.civcraft.client.hud.CivcraftHud.isMouseOverPlanet(client)) {
+					openGameMenu(client);
+					prevLmb = true;
+					return;
+				}
+				int hudBtn = com.civcraft.client.hud.CivcraftHud.mouseGhostButton(client);
+				if (hudBtn == 0) {
+					net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+							new com.civcraft.network.ConfirmGhostPayload());
+					prevLmb = true; prevRmb = rmb;
+					return;
+				}
+				if (hudBtn == 1) {
+					cancelGhostWithRefund();
+					prevLmb = true; prevRmb = rmb;
+					return;
+				}
+				var giz = detectGizmoUnderMouse(client, mx, my);
+				if (giz != null) {
+					handleGizmoClick(giz);
+					prevLmb = true;
+					prevRmb = rmb;
+					return;
+				}
+				com.civcraft.client.building.GhostState.dragging = true;
+			}
+			if (lmb && com.civcraft.client.building.GhostState.dragging) {
+				sendGhostDrag(client, mx, my);
+			}
+			if (!lmb && prevLmb) {
+				com.civcraft.client.building.GhostState.dragging = false;
+			}
+			if (rmb && !prevRmb) {
+				net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+						new com.civcraft.network.ConfirmGhostPayload());
+			}
+			prevLmb = lmb;
+			prevRmb = rmb;
+			return;
+		}
+
 		if (lmb && !prevLmb) {
-			// If the click started over the perk button, fire the perk and
-			// skip selection to avoid a spurious drag.
 			if (com.civcraft.client.hud.CivcraftHud.isMouseOverPlanet(client)) {
-				sendNextTurn(client);
+				openGameMenu(client);
 				prevLmb = true;
 				return;
 			}
-			if (com.civcraft.client.hud.CivcraftHud.isMouseOverPerk(client)
-					&& SelectionState.kind != SelectionState.Kind.NONE) {
-				firePerk(client);
-				prevLmb = true;
-				return;
+			if (SelectionState.kind != SelectionState.Kind.NONE) {
+				int slot = com.civcraft.client.hud.CivcraftHud.mousePerkSlot(client);
+				if (slot >= 0) {
+					firePerk(client, slot);
+					prevLmb = true;
+					return;
+				}
 			}
 			SelectionState.begin(mx, my);
-			Civcraft.LOGGER.info("[CivCraft] LMB DOWN at ({}, {})", mx, my);
 		} else if (!lmb && prevLmb) {
 			SelectionState.end();
-			Civcraft.LOGGER.info("[CivCraft] LMB UP at ({}, {})", mx, my);
 			resolveSelection(client);
 		} else if (lmb) {
 			SelectionState.update(mx, my);
@@ -170,6 +327,62 @@ public class CivcraftClient implements ClientModInitializer {
 		prevRmb = rmb;
 	}
 
+	private static final double GIZMO_PIXEL_RADIUS = 28.0;
+
+	private com.civcraft.client.building.GhostState.Gizmo detectGizmoUnderMouse(
+			Minecraft client, double mx, double my) {
+		com.civcraft.client.building.GhostState.Gizmo best = null;
+		double bestD2 = GIZMO_PIXEL_RADIUS * GIZMO_PIXEL_RADIUS;
+		for (var giz : com.civcraft.client.building.GhostState.Gizmo.values()) {
+			var wp = com.civcraft.client.building.GhostState.gizmoPos(giz);
+			float[] s = CameraMath.worldToScreen(client, wp.x, wp.y, wp.z);
+			if (s == null) continue;
+			double dx = s[0] - mx, dy = s[1] - my;
+			double d2 = dx * dx + dy * dy;
+			if (d2 < bestD2) { bestD2 = d2; best = giz; }
+		}
+		return best;
+	}
+
+	private void handleGizmoClick(com.civcraft.client.building.GhostState.Gizmo giz) {
+		var pos = com.civcraft.client.building.GhostState.pos;
+		switch (giz) {
+			case ARROW_N -> sendGhostPos(pos.getX(),     pos.getY(), pos.getZ() - 1);
+			case ARROW_S -> sendGhostPos(pos.getX(),     pos.getY(), pos.getZ() + 1);
+			case ARROW_W -> sendGhostPos(pos.getX() - 1, pos.getY(), pos.getZ());
+			case ARROW_E -> sendGhostPos(pos.getX() + 1, pos.getY(), pos.getZ());
+		}
+	}
+
+	private void cancelGhostWithRefund() {
+		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+				new com.civcraft.network.CancelGhostPayload());
+		if (com.civcraft.client.building.GhostState.kind
+				== com.civcraft.network.SpawnGhostPayload.KIND_TOWNHALL) {
+			com.civcraft.client.resource.ResourceState.food  += com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD;
+			com.civcraft.client.resource.ResourceState.wood  += com.civcraft.client.resource.ResourceState.TOWN_HALL_WOOD;
+			com.civcraft.client.resource.ResourceState.stone += com.civcraft.client.resource.ResourceState.TOWN_HALL_STONE;
+		}
+	}
+
+	private void sendGhostPos(int x, int y, int z) {
+		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+				new com.civcraft.network.UpdateGhostPosPayload(x, y, z));
+	}
+
+	private void sendGhostDrag(Minecraft client, double mx, double my) {
+		net.minecraft.world.phys.Vec3 target = CameraMath.cursorToBlock(client, mx, my);
+		if (target == null) return;
+		int px = (int) Math.floor(target.x);
+		int pz = (int) Math.floor(target.z);
+		// Only send if changed from last-known pos to avoid packet spam.
+		if (px == com.civcraft.client.building.GhostState.pos.getX()
+				&& pz == com.civcraft.client.building.GhostState.pos.getZ()) return;
+		int py = (int) Math.floor(target.y);
+		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+				new com.civcraft.network.UpdateGhostPosPayload(px, py, pz));
+	}
+
 	private void issueMoveOrder(Minecraft client) {
 		if (client.player == null) return;
 		if (SelectionState.selected.isEmpty()) {
@@ -177,8 +390,8 @@ public class CivcraftClient implements ClientModInitializer {
 					Component.literal("§7Nothing selected — drag LMB over units first."), true);
 			return;
 		}
-		Vec3 target = CameraMath.cursorToGround(
-				client, client.mouseHandler.xpos(), client.mouseHandler.ypos(), TopDownMode.anchorY);
+		Vec3 target = CameraMath.cursorToBlock(
+				client, client.mouseHandler.xpos(), client.mouseHandler.ypos());
 		if (target == null) {
 			client.player.displayClientMessage(
 					Component.literal("§cCannot aim there."), true);
@@ -207,7 +420,7 @@ public class CivcraftClient implements ClientModInitializer {
 			client.mouseHandler.releaseMouse();
 			sendCommand(client, "gamemode spectator");
 			player.displayClientMessage(
-					Component.literal("§6RTS ON  ·  LMB drag = select  ·  RMB = move  ·  Z/X rotate  ·  scroll zoom"), true);
+					Component.literal("§6RTS ON  ·  ЛКМ выделение  ·  ПКМ приказ  ·  СКМ pan  ·  Shift+СКМ поворот  ·  колесо зум"), true);
 		} else {
 			SelectionState.selected.clear();
 			client.mouseHandler.grabMouse();
@@ -248,13 +461,44 @@ public class CivcraftClient implements ClientModInitializer {
 		}
 	}
 
-	private void rotateByKeys() {
-		while (rotateLeftKey.consumeClick()) {
-			TopDownMode.yaw = (TopDownMode.yaw + 360f - TopDownMode.yawStep) % 360f;
+	/**
+	 * Middle-mouse drag: pan the camera anchor by tracking the mouse delta since
+	 * MMB went down. Hold Shift to rotate yaw instead (delta X → degrees).
+	 */
+	private void pollMiddleMouse(Minecraft client) {
+		long window = client.getWindow().handle();
+		boolean mmb = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_MIDDLE) == GLFW.GLFW_PRESS;
+		boolean shift = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS
+				|| GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
+		double mx = client.mouseHandler.xpos();
+		double my = client.mouseHandler.ypos();
+
+		if (mmb && !prevMmb) {
+			mmbStartX = mx;
+			mmbStartY = my;
+			mmbStartAnchorX = TopDownMode.anchorX;
+			mmbStartAnchorZ = TopDownMode.anchorZ;
+			mmbStartYaw = TopDownMode.yaw;
+			mmbWasRotate = shift;
 		}
-		while (rotateRightKey.consumeClick()) {
-			TopDownMode.yaw = (TopDownMode.yaw + TopDownMode.yawStep) % 360f;
+		if (mmb) {
+			double dx = mx - mmbStartX;
+			double dy = my - mmbStartY;
+			if (mmbWasRotate) {
+				TopDownMode.yaw = (mmbStartYaw + (float) (dx * TopDownMode.mouseYawSensitivity) + 720f) % 360f;
+			} else {
+				// Convert screen delta to world delta — account for camera yaw
+				// so a horizontal drag always moves the map horizontally on screen.
+				double yawRad = Math.toRadians(TopDownMode.yaw);
+				double fx = -Math.sin(yawRad), fz = Math.cos(yawRad);  // forward
+				double sx = fz, sz = -fx;                              // side (right)
+				double wx = (sx * dx + fx * dy) * TopDownMode.mousePanSensitivity;
+				double wz = (sz * dx + fz * dy) * TopDownMode.mousePanSensitivity;
+				TopDownMode.anchorX = mmbStartAnchorX + wx;
+				TopDownMode.anchorZ = mmbStartAnchorZ + wz;
+			}
 		}
+		prevMmb = mmb;
 	}
 
 	private void holdCursorFree(Minecraft client) {
@@ -311,17 +555,21 @@ public class CivcraftClient implements ClientModInitializer {
 		}
 
 		// Second pass: expand each direct hit to its full squad (all squad
-		// members within SQUAD_LINK_RADIUS).
+		// members within SQUAD_LINK_RADIUS). Keep selection kind consistent —
+		// a builder hit yields a builder squad, a settler hit a settler squad.
+		boolean anyBuilder = hits.stream().anyMatch(CivcraftClient::isBuilder);
 		java.util.Set<UUID> squad = new java.util.HashSet<>();
 		for (Entity hit : hits) {
 			for (Entity other : client.level.entitiesForRendering()) {
 				if (!isSquadMember(other)) continue;
+				if (isBuilder(other) != anyBuilder) continue;
 				if (other.distanceTo(hit) <= SQUAD_LINK_RADIUS) {
 					squad.add(other.getUUID());
 				}
 			}
 		}
-		SelectionState.setSquad(squad);
+		SelectionState.setSquad(squad,
+				anyBuilder ? SelectionState.Kind.BUILDER_SQUAD : SelectionState.Kind.SQUAD);
 
 		if (client.player != null) {
 			client.player.displayClientMessage(
@@ -335,8 +583,7 @@ public class CivcraftClient implements ClientModInitializer {
 	 */
 	private net.minecraft.core.BlockPos findTownHallUnderCursor(Minecraft client, double mouseX, double mouseY) {
 		if (client.level == null) return null;
-		net.minecraft.world.phys.Vec3 ground = CameraMath.cursorToGround(
-				client, mouseX, mouseY, TopDownMode.anchorY);
+		net.minecraft.world.phys.Vec3 ground = CameraMath.cursorToBlock(client, mouseX, mouseY);
 		if (ground == null) return null;
 		int cx = (int) Math.floor(ground.x);
 		int cz = (int) Math.floor(ground.z);
@@ -364,10 +611,15 @@ public class CivcraftClient implements ClientModInitializer {
 	public static boolean isSquadMember(Entity e) {
 		if (e.getCustomName() == null) return false;
 		String name = e.getCustomName().getString();
-		if (name.startsWith("⚔ ")) return true;
+		if (name.startsWith("⚔ ") || name.startsWith("⛏ ") || name.startsWith("🪓 ")) return true;
 		// Backwards-compat with squads spawned before we added the ⚔ prefix.
 		return name.equals("Старейшина") || name.equals("Поселенец")
 				|| name.equals("Колонист") || name.equals("Мул");
+	}
+
+	public static boolean isBuilder(Entity e) {
+		if (e.getCustomName() == null) return false;
+		return e.getCustomName().getString().startsWith("⛏ ");
 	}
 
 	private void syncGlowWithSelection(Minecraft client) {
