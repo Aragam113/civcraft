@@ -234,18 +234,34 @@ public class Civcraft implements ModInitializer {
 			sendGhostCleared(player);
 			player.displayClientMessage(Component.literal("§6Ратуша заложена."), true);
 		} else {
-			// Builder ghost: move to ACTIVE_BUILDS so the player can queue new
-			// ghosts while this one finishes. Carriers reference the build directly.
-			g.confirmed = true;
-			PENDING_GHOSTS.remove(player.getUUID());
-			ACTIVE_BUILDS.add(g);
-			for (UUID u : g.units) {
-				if (level.getEntity(u) != null) {
-					CARRIERS.put(u, new CarrierJob(g));
+			// Builder ghost — instant build on confirm. Sawmill free; smithy
+			// costs wood+stone. Consumes one builder charge.
+			int[] res = PLAYER_RESOURCES.computeIfAbsent(player.getUUID(), u -> new int[]{50, 100, 50, 0, 0, 0});
+			if (g.kind == SpawnGhostPayload.KIND_SMITHY) {
+				int woodCost  = 60;
+				int stoneCost = 40;
+				if (res[1] < woodCost || res[2] < stoneCost) {
+					player.displayClientMessage(Component.literal(String.format(
+							"§cНе хватает ресурсов для кузницы (нужно: %d дерева, %d камня)",
+							woodCost, stoneCost)), true);
+					return;  // keep ghost active — user can cancel or get resources
 				}
+				res[1] -= woodCost;
+				res[2] -= stoneCost;
+				sendResources(player, res);
 			}
-			sendGhostCleared(player);  // unblock UI — player can now spawn another ghost
-			player.displayClientMessage(Component.literal("§6Стройка началась. Строители носят ресурсы..."), true);
+			completeBuilding(level, g);
+			// Consume first living builder in the squad.
+			for (UUID u : g.units) {
+				Entity b = level.getEntity(u);
+				if (b != null) { b.discard(); MOVE_TARGETS.remove(u); break; }
+			}
+			PENDING_GHOSTS.remove(player.getUUID());
+			sendGhostCleared(player);
+			player.displayClientMessage(Component.literal(
+					g.kind == SpawnGhostPayload.KIND_SAWMILL
+							? "§6Лесопилка построена."
+							: "§6Кузница построена."), true);
 		}
 	}
 
