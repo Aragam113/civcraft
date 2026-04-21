@@ -61,6 +61,16 @@ public class CivcraftClient implements ClientModInitializer {
 				});
 
 		ClientPlayNetworking.registerGlobalReceiver(
+				com.civcraft.network.TurnStatePayload.ID, (payload, context) -> {
+					com.civcraft.client.turn.TurnInfo.turn = payload.turn();
+					com.civcraft.client.turn.TurnInfo.year = payload.year();
+					com.civcraft.turn.Era[] eras = com.civcraft.turn.Era.values();
+					int ord = payload.eraOrdinal() & 0xFF;
+					com.civcraft.client.turn.TurnInfo.era = (ord >= 0 && ord < eras.length)
+							? eras[ord] : com.civcraft.turn.Era.ANCIENT;
+				});
+
+		ClientPlayNetworking.registerGlobalReceiver(
 				com.civcraft.network.GhostStatePayload.ID, (payload, context) -> {
 					if (payload.kind() == com.civcraft.network.GhostStatePayload.KIND_NONE) {
 						com.civcraft.client.building.GhostState.clear();
@@ -318,6 +328,12 @@ public class CivcraftClient implements ClientModInitializer {
 		if (lmb && !prevLmb) {
 			if (com.civcraft.client.hud.CivcraftHud.isMouseOverPlanet(client)) {
 				openGameMenu(client);
+				prevLmb = true;
+				return;
+			}
+			if (com.civcraft.client.hud.CivcraftHud.isMouseOverEndTurn(client)) {
+				net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+						new com.civcraft.network.EndTurnPayload());
 				prevLmb = true;
 				return;
 			}

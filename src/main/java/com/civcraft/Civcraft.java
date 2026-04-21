@@ -3,12 +3,16 @@ package com.civcraft;
 import com.civcraft.building.GhostBuilding;
 import com.civcraft.network.CancelGhostPayload;
 import com.civcraft.network.ConfirmGhostPayload;
+import com.civcraft.network.EndTurnPayload;
 import com.civcraft.network.GhostStatePayload;
 import com.civcraft.network.MoveOrderPayload;
 import com.civcraft.network.ResourceSyncPayload;
 import com.civcraft.network.SpawnGhostPayload;
 import com.civcraft.network.SpawnSettlersPayload;
+import com.civcraft.network.TurnStatePayload;
 import com.civcraft.network.UpdateGhostPosPayload;
+import com.civcraft.turn.Era;
+import com.civcraft.turn.TurnState;
 import com.civcraft.registry.ModBlocks;
 import com.civcraft.registry.ModEntities;
 import com.civcraft.registry.ModItemGroups;
@@ -147,8 +151,6 @@ public class Civcraft implements ModInitializer {
 	private static final int CARRIER_WAIT_TICKS = 10;
 	private static final int DELIVERY_TRIPS = 9;  // 3 builders × 3 trips = smithy/sawmill done
 	public static final int GHOST_DRAG_RADIUS = 5;
-	private static final int TICKS_PER_TURN = 200;  // ≈10 real seconds per Civ-style turn
-	private static int turnTickCounter = 0;
 	private static final double LUMBERJACK_STEP = 0.08;
 	private static final int LUMBERJACK_SEARCH_RADIUS = 48;
 	private static final int CHOP_DURATION_TICKS = 40;
@@ -188,6 +190,11 @@ public class Civcraft implements ModInitializer {
 
 		PayloadTypeRegistry.playS2C().register(ResourceSyncPayload.ID, ResourceSyncPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(GhostStatePayload.ID, GhostStatePayload.CODEC);
+		PayloadTypeRegistry.playS2C().register(TurnStatePayload.ID, TurnStatePayload.CODEC);
+
+		PayloadTypeRegistry.playC2S().register(EndTurnPayload.ID, EndTurnPayload.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(EndTurnPayload.ID, (payload, context) ->
+				context.server().execute(() -> handleEndTurn(context.player())));
 
 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
 				server.execute(() -> handlePlayerJoin(handler.getPlayer())));
@@ -195,7 +202,8 @@ public class Civcraft implements ModInitializer {
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickMovement);
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickLumberjacks);
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickCarriers);
-		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickProductionTurns);
+		// Phase 1: turns advance on explicit End Turn instead of a real-time
+		// timer — the old auto-tick production loop is gone.
 
 		CommandRegistrationCallback.EVENT.register((dispatcher, registry, env) ->
 				dispatcher.register(Commands.literal("civcraft")
@@ -324,6 +332,7 @@ public class Civcraft implements ModInitializer {
 		int[] starting = PLAYER_RESOURCES.computeIfAbsent(player.getUUID(),
 				u -> new int[]{30, 40, 10, 0, 0});
 		sendCivResources(player, starting);
+		sendTurnState(player);
 
 		// Only spawn the starter settler squad the FIRST time a player enters
 		// this world — the tag persists in the player's NBT, so re-joining no
@@ -531,12 +540,15 @@ public class Civcraft implements ModInitializer {
 		}
 	}
 
-	/** One "turn" every TICKS_PER_TURN server ticks: accumulate production into
-	 *  every in-progress build, materialize any that have completed. */
-	private static void tickProductionTurns(net.minecraft.server.MinecraftServer server) {
-		if (++turnTickCounter < TICKS_PER_TURN) return;
-		turnTickCounter = 0;
-		if (ACTIVE_BUILDS.isEmpty()) return;
+	/** Advance the world by one turn — called on EndTurnPayload from any player.
+	 *  Increments the calendar, recomputes the era, and accumulates production
+	 *  yield into every in-progress build. */
+	private static void handleEndTurn(ServerPlayer player) {
+		net.minecraft.server.MinecraftServer server =
+				player.level() instanceof ServerLevel sl ? sl.getServer() : null;
+		if (server == null) return;
+		TurnState.advance();
+		// Production advance for all ACTIVE_BUILDS.
 		for (var it = ACTIVE_BUILDS.iterator(); it.hasNext(); ) {
 			GhostBuilding g = it.next();
 			int yield = totalProductionYield(g.owner);
@@ -557,6 +569,17 @@ public class Civcraft implements ModInitializer {
 				}
 			}
 		}
+		// Sync new turn state to everyone connected.
+		TurnStatePayload p = new TurnStatePayload(
+				TurnState.turnNumber, TurnState.year, (byte) TurnState.era.ordinal());
+		for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+			ServerPlayNetworking.send(sp, p);
+		}
+	}
+
+	private static void sendTurnState(ServerPlayer player) {
+		ServerPlayNetworking.send(player, new TurnStatePayload(
+				TurnState.turnNumber, TurnState.year, (byte) TurnState.era.ordinal()));
 	}
 
 	private static BlockPos findNearestTownHall(ServerLevel lv, BlockPos from) {

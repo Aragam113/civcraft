@@ -98,6 +98,8 @@ public final class CivcraftHud {
 
 		drawResourceBar(graphics, mc);
 		drawPlanetButton(graphics, mc);
+		drawTurnPanel(graphics, mc);
+		drawEndTurnButton(graphics, mc);
 		drawBottomBar(graphics, mc);
 		drawSelectionRect(graphics, mc);
 		drawGhostButtons(graphics, mc);
@@ -170,6 +172,49 @@ public final class CivcraftHud {
 				PLANET_SHEET, p[0], p[1], u, 0f,
 				PLANET_SIZE, PLANET_SIZE, PLANET_SRC, PLANET_SRC,
 				PLANET_SRC * PLANET_FRAMES, PLANET_SRC);
+	}
+
+	// ─── Turn / year / era panel + End Turn button ────────────────────────────
+
+	private static final int END_TURN_W = 120;
+	private static final int END_TURN_H = 32;
+
+	public static int[] endTurnRect(Minecraft mc) {
+		int sw = hudWidth(mc);
+		int sh = hudHeight(mc);
+		int x0 = sw - 8 - END_TURN_W;
+		int y0 = sh - 104 /* bottom bar height */ - END_TURN_H - 8;
+		return new int[]{x0, y0, x0 + END_TURN_W, y0 + END_TURN_H};
+	}
+
+	public static boolean isMouseOverEndTurn(Minecraft mc) {
+		return pointIn(mc, endTurnRect(mc));
+	}
+
+	private static void drawTurnPanel(GuiGraphics g, Minecraft mc) {
+		int x0 = 8, y0 = 36;
+		String line1 = "§eХод " + com.civcraft.client.turn.TurnInfo.turn
+				+ " §8· §f" + com.civcraft.client.turn.TurnInfo.yearLabel();
+		String line2 = "§7" + com.civcraft.client.turn.TurnInfo.era.localized;
+		int w = Math.max(mc.font.width(line1), mc.font.width(line2)) + 12;
+		int h = 30;
+		drawPanel(g, x0, y0, x0 + w, y0 + h);
+		g.drawString(mc.font, line1, x0 + 6, y0 + 6,  0xFFFFFFFF, false);
+		g.drawString(mc.font, line2, x0 + 6, y0 + 18, 0xFFFFFFFF, false);
+	}
+
+	private static void drawEndTurnButton(GuiGraphics g, Minecraft mc) {
+		int[] r = endTurnRect(mc);
+		boolean hover = isMouseOverEndTurn(mc);
+		int border = hover ? 0xFFFFDA66 : 0xFFD4AF37;
+		int bg     = hover ? 0xEE2E1F10 : 0xDD120B04;
+		g.fill(r[0] - 2, r[1] - 2, r[2] + 2, r[3] + 2, border);
+		g.fill(r[0],     r[1],     r[2],     r[3],     bg);
+		String label = "§l§eКонец хода";
+		int tw = mc.font.width(label);
+		g.drawString(mc.font, label,
+				r[0] + (END_TURN_W - tw) / 2, r[1] + (END_TURN_H - mc.font.lineHeight) / 2,
+				0xFFFFFFFF, false);
 	}
 
 	// ─── Bottom bar (3 zones) ─────────────────────────────────────────────────
