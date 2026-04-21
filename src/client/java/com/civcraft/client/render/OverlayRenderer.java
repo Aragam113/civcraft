@@ -380,7 +380,9 @@ public final class OverlayRenderer {
 		double dz = com.civcraft.client.camera.TopDownMode.anchorZ - lastScanZ;
 		if (now - lastHallScan < 800 && dx * dx + dz * dz < 16) return cachedHalls;
 		if (mc.level == null) return cachedHalls;
-		int scanR = 96;
+		// Keep this larger than the view radius + max lens radius (24) so
+		// tiles near the edge still know about halls just off-screen.
+		int scanR = 192;
 		int cx = (int) com.civcraft.client.camera.TopDownMode.anchorX;
 		int cz = (int) com.civcraft.client.camera.TopDownMode.anchorZ;
 		java.util.List<BlockPos> list = new java.util.ArrayList<>();
@@ -406,38 +408,66 @@ public final class OverlayRenderer {
 		return list;
 	}
 
+	/**
+	 * Lens overlay: emits larger tile-quads well above the grass top so they
+	 * neither flicker (z-fighting) nor cull out at zoom-out. This is still a
+	 * "carpet" — a proper post-process desaturation shader is the next step
+	 * and requires loading a PostChain + GLSL pair, which is a meaningful
+	 * chunk of work. For now the carpet is tuned to disappear less badly.
+	 */
 	private static void drawLensOverlay(PoseStack matrices, VertexConsumer filled,
 	                                    Minecraft mc, net.minecraft.client.multiplayer.ClientLevel level,
 	                                    Vec3 cam) {
 		int radius = com.civcraft.client.lens.LensState.mode.radius();
 		if (radius <= 0) return;
 		java.util.List<BlockPos> halls = nearbyTownHalls(mc);
-		int viewR = 64;  // tiles shown relative to camera anchor
+
+		// Scale tile size with zoom so distant tiles cost fewer quads while
+		// still covering the view. Minimum 2 blocks, maximum 8 blocks.
+		int zoom = (int) com.civcraft.client.camera.TopDownMode.distance;
+		int tile = Math.max(2, Math.min(8, zoom / 10));
+		int viewR = 96 + zoom;   // scan area grows with zoom
+
 		int cx = (int) com.civcraft.client.camera.TopDownMode.anchorX;
 		int cz = (int) com.civcraft.client.camera.TopDownMode.anchorZ;
 		int rSq = radius * radius;
+		float lift = 0.6f;  // well clear of z-fighting with grass tops
+		int r = 40, g = 42, b = 52, a = 180;
+
+		// Snap loop to tile grid so tiles don't shimmer as the camera pans.
+		int x0Start = Math.floorDiv(cx - viewR, tile) * tile;
+		int z0Start = Math.floorDiv(cz - viewR, tile) * tile;
+		int x0End   = cx + viewR;
+		int z0End   = cz + viewR;
+
 		PoseStack.Pose pose = matrices.last();
-		for (int x = cx - viewR; x <= cx + viewR; x++) {
-			for (int z = cz - viewR; z <= cz + viewR; z++) {
+		for (int tx = x0Start; tx <= x0End; tx += tile) {
+			for (int tz = z0Start; tz <= z0End; tz += tile) {
+				// Quick reject: tile centre inside territory? Skip.
+				int ccx = tx + tile / 2;
+				int ccz = tz + tile / 2;
 				boolean inside = false;
 				for (BlockPos h : halls) {
-					int dx = x - h.getX();
-					int dz = z - h.getZ();
+					int dx = ccx - h.getX();
+					int dz = ccz - h.getZ();
 					if (dx * dx + dz * dz <= rSq) { inside = true; break; }
 				}
 				if (inside) continue;
+				// Use the surface height at the tile centre — good enough at
+				// this tile scale and far cheaper than averaging four corners.
 				int gy = level.getHeight(
-						net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, x, z);
-				float y = (float) (gy + 0.01 - cam.y);
-				float x0 = (float) (x - cam.x);
-				float z0 = (float) (z - cam.z);
-				// Single dark-gray translucent quad over the column.
+						net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, ccx, ccz);
+				float y  = (float) (gy + lift - cam.y);
+				float x1 = (float) (tx - cam.x);
+				float z1 = (float) (tz - cam.z);
+				float x2 = x1 + tile;
+				float z2 = z1 + tile;
 				addQuad(pose, filled,
-						x0,     y, z0,
-						x0,     y, z0 + 1,
-						x0 + 1, y, z0 + 1,
-						x0 + 1, y, z0,
-						40, 40, 48, 160);
+						x1, y, z1,
+						x1, y, z2,
+						x2, y, z2,
+						x2, y, z1,
+						r, g, b, a);
 			}
 		}
 	}
