@@ -16,6 +16,8 @@ import java.util.List;
 public final class GhostState {
 	public static byte kind = -1;
 	public static BlockPos pos = BlockPos.ZERO;
+	public static int originX = 0;
+	public static int originZ = 0;
 	public static int progress = 0;
 	public static int target = 0;
 	public static boolean confirmed = false;
@@ -104,9 +106,12 @@ public final class GhostState {
 		};
 	}
 
-	public static void apply(byte kind, BlockPos pos, int progress, int target, boolean confirmed) {
+	public static void apply(byte kind, BlockPos pos, int originX, int originZ,
+	                         int progress, int target, boolean confirmed) {
 		GhostState.kind = kind;
 		GhostState.pos = pos;
+		GhostState.originX = originX;
+		GhostState.originZ = originZ;
 		GhostState.progress = progress;
 		GhostState.target = target;
 		GhostState.confirmed = confirmed;

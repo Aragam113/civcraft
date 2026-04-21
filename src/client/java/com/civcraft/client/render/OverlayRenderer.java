@@ -147,10 +147,15 @@ public final class OverlayRenderer {
 		var dispatcher = mc.getBlockRenderer();
 		PoseStack matrices = ctx.matrices();
 		MultiBufferSource consumers = ctx.consumers();
-		if (consumers == null) return;
-		// Wrap so the block renderer emits all quads into a translucent buffer
-		// with ~50% alpha — gives a proper "hologram" look using real textures.
+		if (consumers == null || mc.level == null) return;
 		GhostBufferSource ghostBuf = new GhostBufferSource(consumers, 120);
+		GhostBufferSource ringBuf  = new GhostBufferSource(consumers, 90);
+
+		// Gray ring showing the allowed drag radius — only while unconfirmed.
+		if (!com.civcraft.client.building.GhostState.confirmed) {
+			drawDragRadiusRing(mc, dispatcher, matrices, ringBuf, cam);
+		}
+
 		double px = com.civcraft.client.building.GhostState.pos.getX();
 		double py = com.civcraft.client.building.GhostState.pos.getY();
 		double pz = com.civcraft.client.building.GhostState.pos.getZ();
@@ -163,6 +168,36 @@ public final class OverlayRenderer {
 			dispatcher.renderSingleBlock(gb.state(), matrices, ghostBuf,
 					0x00F000F0, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY);
 			matrices.popPose();
+		}
+	}
+
+	private static void drawDragRadiusRing(Minecraft mc,
+	                                       net.minecraft.client.renderer.block.BlockRenderDispatcher dispatcher,
+	                                       PoseStack matrices,
+	                                       GhostBufferSource buf,
+	                                       Vec3 cam) {
+		int r = com.civcraft.Civcraft.GHOST_DRAG_RADIUS;
+		int ox = com.civcraft.client.building.GhostState.originX;
+		int oz = com.civcraft.client.building.GhostState.originZ;
+		// Light gray, semi-transparent — sits on top of whatever block is at the
+		// surface for each (x, z) column, following terrain height.
+		var state = net.minecraft.world.level.block.Blocks.LIGHT_GRAY_CONCRETE.defaultBlockState();
+		int rSq = r * r;
+		int innerSq = (r - 1) * (r - 1);
+		for (int dx = -r; dx <= r; dx++) {
+			for (int dz = -r; dz <= r; dz++) {
+				int d = dx * dx + dz * dz;
+				if (d > rSq || d <= innerSq) continue;  // 1-block-thick ring only
+				int wx = ox + dx;
+				int wz = oz + dz;
+				int gy = mc.level.getHeight(
+						net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, wx, wz) - 1;
+				matrices.pushPose();
+				matrices.translate(wx - cam.x, gy - cam.y, wz - cam.z);
+				dispatcher.renderSingleBlock(state, matrices, buf,
+						0x00F000F0, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY);
+				matrices.popPose();
+			}
 		}
 	}
 

@@ -14,6 +14,9 @@ public class GhostBuilding {
 	public final UUID owner;
 	public final byte kind;          // SpawnGhostPayload KIND_*
 	public BlockPos pos;
+	/** World X/Z where the squad stood on spawn; dragging is clamped to a radius from here. */
+	public final int originX;
+	public final int originZ;
 	public boolean confirmed = false;
 	public int progress = 0;
 	public int target;               // delivery trips needed; 0 for instant (townhall)
@@ -23,6 +26,8 @@ public class GhostBuilding {
 		this.owner = owner;
 		this.kind = kind;
 		this.pos = pos;
+		this.originX = pos.getX();
+		this.originZ = pos.getZ();
 		this.target = target;
 		this.units.addAll(units);
 	}

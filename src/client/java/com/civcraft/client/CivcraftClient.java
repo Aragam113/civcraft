@@ -68,6 +68,7 @@ public class CivcraftClient implements ClientModInitializer {
 					} else {
 						com.civcraft.client.building.GhostState.apply(
 								payload.kind(), payload.pos(),
+								payload.originX(), payload.originZ(),
 								payload.progress(), payload.target(), payload.confirmed());
 					}
 				});

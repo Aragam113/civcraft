@@ -13,6 +13,7 @@ import net.minecraft.resources.Identifier;
  * kind == 0xFF means "no active ghost" (clear it client-side).
  */
 public record GhostStatePayload(byte kind, int x, int y, int z,
+                                int originX, int originZ,
                                 int progress, int target, boolean confirmed)
 		implements CustomPacketPayload {
 	public static final byte KIND_NONE = (byte) 0xFF;
@@ -25,6 +26,8 @@ public record GhostStatePayload(byte kind, int x, int y, int z,
 			ByteBufCodecs.INT,  GhostStatePayload::x,
 			ByteBufCodecs.INT,  GhostStatePayload::y,
 			ByteBufCodecs.INT,  GhostStatePayload::z,
+			ByteBufCodecs.INT,  GhostStatePayload::originX,
+			ByteBufCodecs.INT,  GhostStatePayload::originZ,
 			ByteBufCodecs.VAR_INT, GhostStatePayload::progress,
 			ByteBufCodecs.VAR_INT, GhostStatePayload::target,
 			ByteBufCodecs.BOOL, GhostStatePayload::confirmed,
@@ -32,7 +35,9 @@ public record GhostStatePayload(byte kind, int x, int y, int z,
 	);
 
 	public BlockPos pos() { return new BlockPos(x, y, z); }
-	public static GhostStatePayload cleared() { return new GhostStatePayload(KIND_NONE, 0, 0, 0, 0, 0, false); }
+	public static GhostStatePayload cleared() {
+		return new GhostStatePayload(KIND_NONE, 0, 0, 0, 0, 0, 0, 0, false);
+	}
 
 	@Override public Type<? extends CustomPacketPayload> type() { return ID; }
 }

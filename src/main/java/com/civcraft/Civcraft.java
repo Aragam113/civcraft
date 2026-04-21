@@ -81,6 +81,7 @@ public class Civcraft implements ModInitializer {
 	public static final java.util.Map<UUID, CarrierJob> CARRIERS = new ConcurrentHashMap<>();
 	private static final int CARRIER_WAIT_TICKS = 10;
 	private static final int DELIVERY_TRIPS = 9;  // 3 builders × 3 trips = smithy/sawmill done
+	public static final int GHOST_DRAG_RADIUS = 5;  // blocks the ghost can be moved from its origin
 	private static final double LUMBERJACK_STEP = 0.08;
 	private static final int LUMBERJACK_SEARCH_RADIUS = 48;
 	private static final int CHOP_DURATION_TICKS = 40;
@@ -279,7 +280,18 @@ public class Civcraft implements ModInitializer {
 		GhostBuilding g = PENDING_GHOSTS.get(player.getUUID());
 		if (g == null || g.confirmed) return;
 		if (!(player.level() instanceof ServerLevel level)) return;
-		g.pos = groundAt(level, p.pos());
+		// Clamp the drag target to within GHOST_DRAG_RADIUS of the spawn origin.
+		int dx = p.x() - g.originX;
+		int dz = p.z() - g.originZ;
+		double d2 = dx * dx + dz * dz;
+		int nx = p.x();
+		int nz = p.z();
+		if (d2 > (double) GHOST_DRAG_RADIUS * GHOST_DRAG_RADIUS) {
+			double d = Math.sqrt(d2);
+			nx = g.originX + (int) Math.round(dx * GHOST_DRAG_RADIUS / d);
+			nz = g.originZ + (int) Math.round(dz * GHOST_DRAG_RADIUS / d);
+		}
+		g.pos = groundAt(level, new BlockPos(nx, p.y(), nz));
 		sendGhostState(player, g);
 	}
 
@@ -342,6 +354,7 @@ public class Civcraft implements ModInitializer {
 	private static void sendGhostState(ServerPlayer player, GhostBuilding g) {
 		ServerPlayNetworking.send(player, new GhostStatePayload(
 				g.kind, g.pos.getX(), g.pos.getY(), g.pos.getZ(),
+				g.originX, g.originZ,
 				g.progress, g.target, g.confirmed));
 	}
 
