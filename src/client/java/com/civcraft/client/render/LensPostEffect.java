@@ -102,6 +102,10 @@ public final class LensPostEffect {
 
 		for (int py = 0; py < MASK_H; py++) {
 			for (int px = 0; px < MASK_W; px++) {
+				// The vanilla screenquad vertex shader emits UV (0..1) across
+				// the visible window; sampler coordinate (u, v) with v=0 at
+				// the BOTTOM maps to NativeImage row (MASK_H - 1) — so we
+				// write with an inverted row index to cancel the Y-flip.
 				double fbX = (px + 0.5) * fbW / (double) MASK_W;
 				double fbY = (py + 0.5) * fbH / (double) MASK_H;
 				Vec3 ground = CameraMath.cursorToGround(mc, fbX, fbY, anchorY);
@@ -115,7 +119,7 @@ public final class LensPostEffect {
 				}
 				int v = owned ? 255 : 0;
 				int abgr = 0xFF000000 | (v << 16) | (v << 8) | v;
-				maskImage.setPixelABGR(px, py, abgr);
+				maskImage.setPixelABGR(px, MASK_H - 1 - py, abgr);
 			}
 		}
 	}
