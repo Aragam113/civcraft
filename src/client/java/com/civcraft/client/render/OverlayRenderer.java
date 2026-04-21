@@ -101,7 +101,7 @@ public final class OverlayRenderer {
 		VertexConsumer filled = consumers.getBuffer(RenderTypes.debugFilledBox());
 		for (RingSpec s : ringSpecs) {
 			drawRingThick(matrices, filled,
-					s.cx() - cam.x, s.cy() + 0.02 - cam.y, s.cz() - cam.z,
+					s.cx() - cam.x, s.cy() - cam.y, s.cz() - cam.z,
 					s.radius(), 0.33f,
 					s.r(), s.g(), s.b(), s.a());
 		}
@@ -336,56 +336,138 @@ public final class OverlayRenderer {
 		}
 	}
 
-	/** Filled annulus of given outer radius and band thickness, lying flat on XZ. */
+	/** Ring of small 3D cubes placed around a circle — guaranteed visible from
+	 *  top-down even with z-fighting issues on flat quads. */
 	private static void drawRingThick(PoseStack m, VertexConsumer buf,
 	                                  double cx, double cy, double cz,
 	                                  double radius, double thickness,
 	                                  int r, int g, int b, int a) {
-		double inner = Math.max(0, radius - thickness / 2);
-		double outer = radius + thickness / 2;
-		int segs = RING_SEGMENTS * 2;  // smoother curve for thick band
-		PoseStack.Pose pose = m.last();
+		int segs = 48;
+		double h = thickness * 0.5;
 		for (int i = 0; i < segs; i++) {
-			double a1 = Math.PI * 2 * i / segs;
-			double a2 = Math.PI * 2 * (i + 1) / segs;
-			double c1 = Math.cos(a1), s1 = Math.sin(a1);
-			double c2 = Math.cos(a2), s2 = Math.sin(a2);
-			float y = (float) cy;
-			buf.addVertex(pose, (float)(cx + inner * c1), y, (float)(cz + inner * s1)).setColor(r, g, b, a);
-			buf.addVertex(pose, (float)(cx + outer * c1), y, (float)(cz + outer * s1)).setColor(r, g, b, a);
-			buf.addVertex(pose, (float)(cx + outer * c2), y, (float)(cz + outer * s2)).setColor(r, g, b, a);
-			buf.addVertex(pose, (float)(cx + inner * c2), y, (float)(cz + inner * s2)).setColor(r, g, b, a);
+			double ang = Math.PI * 2 * i / segs;
+			double x = cx + radius * Math.cos(ang);
+			double z = cz + radius * Math.sin(ang);
+			drawFilledCube(m, buf,
+					x - h, cy,             z - h,
+					x + h, cy + thickness, z + h,
+					r, g, b, a);
 		}
 	}
 
-	/** Parabolic arc of white cubes from (x0,y0,z0) to (x1,y1,z1) with a
-	 *  chunky arrowhead block at the destination. */
+	/** 3D ribbon arrow bent into a parabolic arc. Horizontal ribbon tapers
+	 *  from thin at origin to wide near destination, followed by a flat
+	 *  triangular arrowhead pointing along the tangent. White + fully opaque. */
 	private static void drawArcTrajectory(PoseStack m, VertexConsumer buf, Vec3 cam,
 	                                      double x0, double y0, double z0,
 	                                      double x1, double y1, double z1) {
 		double dist = Math.hypot(x1 - x0, z1 - z0);
+		if (dist < 0.1) return;
 		double arcHeight = Math.max(2.5, dist * 0.35);
-		int steps = 24;
+		int steps = 32;
+		// Sample points along the parabola.
+		double[] sx = new double[steps + 1];
+		double[] sy = new double[steps + 1];
+		double[] sz = new double[steps + 1];
 		for (int i = 0; i <= steps; i++) {
 			double t = i / (double) steps;
-			double x = x0 + (x1 - x0) * t;
-			double z = z0 + (z1 - z0) * t;
-			double yBase = y0 + (y1 - y0) * t;
-			double y = yBase + 4 * arcHeight * t * (1 - t);
-			double half = (0.30 + 0.35 * t) * 0.5;  // thicker near the target
-			drawFilledCube(m, buf,
-					x - cam.x - half, y - cam.y - half, z - cam.z - half,
-					x - cam.x + half, y - cam.y + half, z - cam.z + half,
-					245, 245, 245, 235);
+			sx[i] = x0 + (x1 - x0) * t;
+			sz[i] = z0 + (z1 - z0) * t;
+			sy[i] = y0 + (y1 - y0) * t + 4 * arcHeight * t * (1 - t);
 		}
-		// Arrowhead: a 1-block cube elevated at the destination, sitting on top
-		// of the arc's last sample.
-		double ah = 0.55;
-		double atY = y1 + 0.9;
-		drawFilledCube(m, buf,
-				x1 - cam.x - ah, atY - cam.y,          z1 - cam.z - ah,
-				x1 - cam.x + ah, atY - cam.y + ah * 2, z1 - cam.z + ah,
+
+		PoseStack.Pose pose = m.last();
+		int r = 250, g = 250, b = 250, a = 240;
+		// Leave the last segment for the arrowhead so it doesn't overlap.
+		int ribbonSteps = steps - 3;
+
+		for (int i = 0; i < ribbonSteps; i++) {
+			double t0 = i / (double) steps;
+			double t1 = (i + 1) / (double) steps;
+			// Width tapers 0.18 → 0.45 blocks.
+			double w0 = 0.18 + 0.27 * t0;
+			double w1 = 0.18 + 0.27 * t1;
+			// Perpendicular in XZ to the local tangent.
+			double fx = sx[i + 1] - sx[i];
+			double fz = sz[i + 1] - sz[i];
+			double fl = Math.hypot(fx, fz);
+			if (fl < 1e-5) continue;
+			double rx =  fz / fl, rz = -fx / fl;
+			emitRibbonQuad(pose, buf,
+					sx[i]     + rx * w0, sy[i],     sz[i]     + rz * w0,
+					sx[i]     - rx * w0, sy[i],     sz[i]     - rz * w0,
+					sx[i + 1] - rx * w1, sy[i + 1], sz[i + 1] - rz * w1,
+					sx[i + 1] + rx * w1, sy[i + 1], sz[i + 1] + rz * w1,
+					cam, r, g, b, a);
+		}
+
+		// Arrowhead: flat triangle pointing along the final tangent, wider than
+		// the ribbon tip for a clear "arrow" silhouette.
+		int n = steps;
+		double fx = sx[n] - sx[n - 3];
+		double fz = sz[n] - sz[n - 3];
+		double fl = Math.hypot(fx, fz);
+		if (fl < 1e-5) return;
+		double fxN = fx / fl, fzN = fz / fl;
+		double rxN = fzN, rzN = -fxN;
+		double headLen  = 1.4;
+		double headHalf = 0.65;
+		double tipX = sx[n],          tipY = sy[n],          tipZ = sz[n];
+		double baseX = tipX - fxN * headLen;
+		double baseZ = tipZ - fzN * headLen;
+		double baseY = sy[n - 3];
+		double lX = baseX + rxN * headHalf, lZ = baseZ + rzN * headHalf;
+		double rX = baseX - rxN * headHalf, rZ = baseZ - rzN * headHalf;
+		// Thin vertical extrusion so the arrowhead has some 3D presence.
+		double lift = 0.08;
+		emitArrowTri(pose, buf, cam,
+				tipX, tipY + lift, tipZ,
+				lX,   baseY + lift, lZ,
+				rX,   baseY + lift, rZ,
 				255, 255, 255, 255);
+		// Underside, wound the other way so the tri is visible from below too.
+		emitArrowTri(pose, buf, cam,
+				tipX, tipY - lift, tipZ,
+				rX,   baseY - lift, rZ,
+				lX,   baseY - lift, lZ,
+				255, 255, 255, 255);
+	}
+
+	private static void emitRibbonQuad(PoseStack.Pose p, VertexConsumer buf,
+	                                   double ax, double ay, double az,
+	                                   double bx, double by, double bz,
+	                                   double cx, double cy, double cz,
+	                                   double dx, double dy, double dz,
+	                                   Vec3 cam, int r, int g, int b, int a) {
+		addQuad(p, buf,
+				ax - cam.x, ay - cam.y, az - cam.z,
+				bx - cam.x, by - cam.y, bz - cam.z,
+				cx - cam.x, cy - cam.y, cz - cam.z,
+				dx - cam.x, dy - cam.y, dz - cam.z,
+				r, g, b, a);
+		// Double-sided so the ribbon shows from above and below.
+		addQuad(p, buf,
+				ax - cam.x, ay - cam.y, az - cam.z,
+				dx - cam.x, dy - cam.y, dz - cam.z,
+				cx - cam.x, cy - cam.y, cz - cam.z,
+				bx - cam.x, by - cam.y, bz - cam.z,
+				r, g, b, a);
+	}
+
+	private static void emitArrowTri(PoseStack.Pose p, VertexConsumer buf, Vec3 cam,
+	                                 double tipX, double tipY, double tipZ,
+	                                 double lX, double lY, double lZ,
+	                                 double rX, double rY, double rZ,
+	                                 int r, int g, int b, int a) {
+		// Emit as a degenerate quad (tip doubled) so we stay on the quad-based
+		// debugFilledBox pipeline.
+		float txc = (float)(tipX - cam.x), tyc = (float)(tipY - cam.y), tzc = (float)(tipZ - cam.z);
+		float lxc = (float)(lX - cam.x),   lyc = (float)(lY - cam.y),   lzc = (float)(lZ - cam.z);
+		float rxc = (float)(rX - cam.x),   ryc = (float)(rY - cam.y),   rzc = (float)(rZ - cam.z);
+		buf.addVertex(p, txc, tyc, tzc).setColor(r, g, b, a);
+		buf.addVertex(p, lxc, lyc, lzc).setColor(r, g, b, a);
+		buf.addVertex(p, rxc, ryc, rzc).setColor(r, g, b, a);
+		buf.addVertex(p, txc, tyc, tzc).setColor(r, g, b, a);
 	}
 
 	private static void drawFilledCube(PoseStack m, VertexConsumer buf,
