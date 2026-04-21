@@ -49,6 +49,7 @@ public class CivcraftClient implements ClientModInitializer {
 		ClientTickEvents.END_CLIENT_TICK.register(this::clientTick);
 		CivcraftHud.register();
 		com.civcraft.client.render.OverlayRenderer.register();
+		com.civcraft.client.render.LensPostEffect.register();
 		EntityRendererRegistry.register(ModEntities.SETTLER, SettlerRenderer::new);
 
 		ClientPlayNetworking.registerGlobalReceiver(

@@ -141,10 +141,9 @@ public final class OverlayRenderer {
 			drawArcTrajectory(matrices, filled, cam, avgX, origY + 0.2, avgZ, avgTx, destY + 0.2, avgTz);
 		}
 
-		// Lens overlay: tint tiles outside the player's territory.
-		if (com.civcraft.client.lens.LensState.mode != com.civcraft.client.lens.LensState.Mode.NONE) {
-			drawLensOverlay(matrices, filled, mc, level, cam);
-		}
+		// Lens overlay: the shader-based desaturation (LensPostEffect) runs
+		// separately at END_MAIN. The carpet quads stay here only as a fall-
+		// back for when the post-chain can't load at all.
 
 		// Ghost building preview uses its own render-type wrap (invalidates
 		// the buffers above; do it last).
