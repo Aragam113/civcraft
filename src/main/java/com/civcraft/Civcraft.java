@@ -245,20 +245,31 @@ public class Civcraft implements ModInitializer {
 		}
 	}
 
+	private static final String STARTER_TAG = "civcraft_starter_spawned";
+
 	private static void handlePlayerJoin(ServerPlayer player) {
 		ServerLevel level = player.level() instanceof ServerLevel sl ? sl : null;
 		if (level == null) return;
-		// Civ-style starting kit: food, production, gold, science, culture.
-		int[] starting = {30, 40, 10, 0, 0};
-		PLAYER_RESOURCES.put(player.getUUID(), starting);
+		// Resources are always pushed on join so the HUD shows the correct
+		// totals, but they were also persisted across sessions via PLAYER_RESOURCES.
+		// TODO: load saved counts from player NBT instead of resetting.
+		int[] starting = PLAYER_RESOURCES.computeIfAbsent(player.getUUID(),
+				u -> new int[]{30, 40, 10, 0, 0});
 		sendResources(player, starting);
+
+		// Only spawn the starter settler squad the FIRST time a player enters
+		// this world — the tag persists in the player's NBT, so re-joining no
+		// longer duplicates units.
+		if (player.getTags().contains(STARTER_TAG)) {
+			LOGGER.info("[CivCraft] {} rejoined (starter already spawned)", player.getName().getString());
+			return;
+		}
+		player.addTag(STARTER_TAG);
 
 		BlockPos at = player.blockPosition();
 		BlockPos settler = findClearGround(level, at.offset(-4, 0, 0));
-		BlockPos builder = findClearGround(level, at.offset(4, 0, 0));
 		com.civcraft.item.SettlerCharterItem.spawnSquadAt(level, settler);
-		com.civcraft.item.SettlerCharterItem.spawnBuilderSquadAt(level, builder);
-		LOGGER.info("[CivCraft] Starter squads spawned for {} near {}", player.getName().getString(), at);
+		LOGGER.info("[CivCraft] Starter settlers spawned for {} near {}", player.getName().getString(), at);
 	}
 
 	private static BlockPos findClearGround(ServerLevel level, BlockPos near) {
@@ -309,16 +320,19 @@ public class Civcraft implements ModInitializer {
 		if (!(player.level() instanceof ServerLevel level)) return;
 
 		if (g.kind == SpawnGhostPayload.KIND_TOWNHALL) {
-			// Settlers founded: instant build, they vanish.
+			// Settlers found the town hall: they vanish, the structure is
+			// placed, and a starter builder squad spawns nearby as a "reward".
 			for (UUID u : g.units) {
 				Entity e = level.getEntity(u);
 				if (e != null) e.discard();
 				MOVE_TARGETS.remove(u);
 			}
 			buildTownHall(level, g.pos);
+			BlockPos builderSpot = findClearGround(level, g.pos.offset(5, 0, 0));
+			com.civcraft.item.SettlerCharterItem.spawnBuilderSquadAt(level, builderSpot);
 			PENDING_GHOSTS.remove(player.getUUID());
 			sendGhostCleared(player);
-			player.displayClientMessage(Component.literal("§6Ратуша заложена."), true);
+			player.displayClientMessage(Component.literal("§6Ратуша заложена. Строители прибыли."), true);
 		} else {
 			// Builder ghost — instant build on confirm, Civ-style costs
 			// (production / gold). Consumes one builder charge.
