@@ -10,23 +10,27 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 public final class CivcraftHud {
 	private static final Identifier CURSOR        = tex("textures/gui/cursor.png");
 	private static final Identifier PLANET_SHEET  = tex("textures/gui/planet.png");
-	private static final Identifier ICON_FOUND      = tex("textures/gui/icon_town_hall.png");
-	private static final Identifier ICON_SPAWN      = tex("textures/gui/icon_spawn_settlers.png");
-	private static final Identifier ICON_SMITHY     = tex("textures/gui/icon_smithy.png");
-	private static final Identifier ICON_SAWMILL    = tex("textures/gui/icon_sawmill.png");
-	private static final Identifier ICON_STOREHOUSE = tex("textures/gui/icon_storehouse.png");
-	private static final Identifier ICON_QUARRY     = tex("textures/gui/icon_quarry.png");
+	// Icons are rendered as vanilla items via GuiGraphics.renderItem — gets us
+	// real multi-tone MC-style pixel art for free.
+	private static final ItemStack ICON_FOUND      = new ItemStack(Items.LODESTONE);
+	private static final ItemStack ICON_SPAWN      = new ItemStack(Items.VILLAGER_SPAWN_EGG);
+	private static final ItemStack ICON_SMITHY     = new ItemStack(Items.ANVIL);
+	private static final ItemStack ICON_SAWMILL    = new ItemStack(Items.OAK_LOG);
+	private static final ItemStack ICON_STOREHOUSE = new ItemStack(Items.BARREL);
+	private static final ItemStack ICON_QUARRY     = new ItemStack(Items.STONE);
 
-	private static final Identifier RES_FOOD       = tex("textures/gui/res_food.png");
-	private static final Identifier RES_PRODUCTION = tex("textures/gui/res_production.png");
-	private static final Identifier RES_GOLD       = tex("textures/gui/res_gold.png");
-	private static final Identifier RES_SCIENCE    = tex("textures/gui/res_science.png");
-	private static final Identifier RES_CULTURE    = tex("textures/gui/res_culture.png");
+	private static final ItemStack RES_FOOD       = new ItemStack(Items.BREAD);
+	private static final ItemStack RES_PRODUCTION = new ItemStack(Items.IRON_PICKAXE);
+	private static final ItemStack RES_GOLD       = new ItemStack(Items.GOLD_INGOT);
+	private static final ItemStack RES_SCIENCE    = new ItemStack(Items.EXPERIENCE_BOTTLE);
+	private static final ItemStack RES_CULTURE    = new ItemStack(Items.WRITTEN_BOOK);
 
 	private static final int CURSOR_SIZE = 32;
 	private static final int PLANET_SIZE = 40;          // small corner button now
@@ -111,14 +115,13 @@ public final class CivcraftHud {
 
 	private static void drawResourceBar(GuiGraphics g, Minecraft mc) {
 		int sw = hudWidth(mc);
-		Identifier[] icons = { RES_FOOD, RES_PRODUCTION, RES_GOLD, RES_SCIENCE, RES_CULTURE };
+		ItemStack[] icons = { RES_FOOD, RES_PRODUCTION, RES_GOLD, RES_SCIENCE, RES_CULTURE };
 		int[] values = {
 				ResourceState.food, ResourceState.production, ResourceState.gold,
 				ResourceState.science, ResourceState.culture,
 		};
-		int iconSize = 18;
 		int slotW = 72;
-		int rowH = iconSize + 4;
+		int rowH = 20;
 		int totalW = slotW * icons.length;
 		int x0 = (sw - totalW) / 2;
 		int y0 = 6;
@@ -127,10 +130,8 @@ public final class CivcraftHud {
 
 		for (int i = 0; i < icons.length; i++) {
 			int ix = x0 + i * slotW;
-			g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
-					icons[i], ix + 3, y0 + 1, 0f, 0f,
-					iconSize, iconSize, iconSize, iconSize, iconSize, iconSize);
-			g.drawString(mc.font, "§e" + values[i], ix + 24, y0 + 6, 0xFFFFFFFF, false);
+			g.renderItem(icons[i], ix + 3, y0);
+			g.drawString(mc.font, "§e" + values[i], ix + 24, y0 + 5, 0xFFFFFFFF, false);
 		}
 	}
 
@@ -319,18 +320,18 @@ public final class CivcraftHud {
 	}
 
 	public static int mousePerkSlot(Minecraft mc) {
-		Identifier[] slots = commandSlots();
+		ItemStack[] slots = commandSlots();
 		if (slots == null) return -1;
 		for (int i = 0; i < slots.length; i++) {
-			if (slots[i] == null) continue;
+			if (slots[i] == null || slots[i].isEmpty()) continue;
 			if (pointIn(mc, perkRect(mc, 0, i))) return i;
 		}
 		return -1;
 	}
 
-	/** Which icons occupy which slot in the 3×3 command grid, based on selection. */
-	private static Identifier[] commandSlots() {
-		Identifier[] out = new Identifier[CMD_COLS * CMD_ROWS];
+	/** Which item occupies which slot in the 3×3 command grid, based on selection. */
+	private static ItemStack[] commandSlots() {
+		ItemStack[] out = new ItemStack[CMD_COLS * CMD_ROWS];
 		switch (SelectionState.kind) {
 			case SQUAD         -> out[0] = ICON_FOUND;
 			case BUILDING      -> out[0] = ICON_SPAWN;
@@ -347,24 +348,24 @@ public final class CivcraftHud {
 
 	private static void drawCommandGrid(GuiGraphics g, Minecraft mc) {
 		int hover = mousePerkSlot(mc);
-		Identifier[] slots = commandSlots();
+		ItemStack[] slots = commandSlots();
 		for (int i = 0; i < CMD_COLS * CMD_ROWS; i++) {
 			int[] r = perkRect(mc, 0, i);
 			drawCommandSlot(g, r, slots == null ? null : slots[i], hover == i);
 		}
 	}
 
-	private static void drawCommandSlot(GuiGraphics g, int[] r, Identifier icon, boolean hover) {
-		int bg     = icon == null ? 0xAA0E0905 : (hover ? 0xEE2A1F10 : 0xDD120B04);
+	private static void drawCommandSlot(GuiGraphics g, int[] r, ItemStack icon, boolean hover) {
+		boolean empty = icon == null || icon.isEmpty();
+		int bg     = empty ? 0xAA0E0905 : (hover ? 0xEE2A1F10 : 0xDD120B04);
 		int border = hover ? 0xFFFFDA66 : 0xFFD4AF37;
 		g.fill(r[0] - 1, r[1] - 1, r[2] + 1, r[3] + 1, border);
 		g.fill(r[0],     r[1],     r[2],     r[3],     bg);
-		if (icon != null) {
-			int inset = 2;
-			int size = CMD_SLOT - inset * 2;
-			g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
-					icon, r[0] + inset, r[1] + inset, 0f, 0f,
-					size, size, size, size, size, size);
+		if (!empty) {
+			// Vanilla renderItem draws at 16×16; center it in the slot.
+			int ix = r[0] + (CMD_SLOT - 16) / 2;
+			int iy = r[1] + (CMD_SLOT - 16) / 2;
+			g.renderItem(icon, ix, iy);
 		}
 	}
 
