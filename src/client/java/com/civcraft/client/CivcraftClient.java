@@ -148,7 +148,8 @@ public class CivcraftClient implements ClientModInitializer {
 	}
 
 	private void openGameMenu(Minecraft client) {
-		client.setScreen(new com.civcraft.client.gui.CivcraftWikiScreen());
+		// Planet button is temporarily a no-op while the wiki screen has a
+		// "Can only blur once per frame" bug. TODO: restore once resolved.
 	}
 
 	private void handlePerkKey(Minecraft client) {

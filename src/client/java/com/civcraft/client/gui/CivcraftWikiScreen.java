@@ -139,8 +139,8 @@ public class CivcraftWikiScreen extends Screen {
 
 	@Override
 	public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-		this.renderBackground(g, mouseX, mouseY, partialTick);
-
+		// Don't call renderBackground here — super.render below will do it, and
+		// calling it twice triggers "Can only blur once per frame".
 		int bookW = (int) (BOOK_TEX_W * SCALE);
 		int bookH = (int) (BOOK_TEX_H * SCALE);
 		int bookX = (this.width  - bookW) / 2;
