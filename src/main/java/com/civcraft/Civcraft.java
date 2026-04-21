@@ -17,6 +17,7 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.commands.Commands;
@@ -136,11 +137,14 @@ public class Civcraft implements ModInitializer {
 										"§6CivCraft: свои постройки §r\n" +
 										"§71. /give @p structure_block\n" +
 										"§72. В блоке — Save Mode, Name: §ecivcraft:townhall§7 (или §ecivcraft:smithy§7, §ecivcraft:sawmill§7)\n" +
-										"§73. Укажи размеры и позицию — нажми Save\n" +
-										"§74. Перезайди в мир — мод применит твою постройку"));
+										"§73. Save → файл сохранится в §f<world>/generated/civcraft/structures/§7\n" +
+										"§74. Чтобы работало во ВСЕХ мирах сразу, скопируй .nbt в:\n" +
+										"§f   " + globalBlueprintDir().toAbsolutePath()));
 							}
 							return 1;
 						}))));
+
+		ensureBlueprintDir();
 
 		LOGGER.info("[CivCraft] Registries loaded");
 	}
@@ -152,11 +156,14 @@ public class Civcraft implements ModInitializer {
 	 * won't chop them.
 	 */
 	private static boolean placeFromTemplate(ServerLevel level, BlockPos base, String name) {
-		var mgr = level.getStructureManager();
-		Identifier id = Identifier.fromNamespaceAndPath(MOD_ID, name);
-		var opt = mgr.get(id);
-		if (opt.isEmpty()) return false;
-		StructureTemplate tpl = opt.get();
+		StructureTemplate tpl = loadGlobalBlueprint(level, name);
+		if (tpl == null) {
+			// Fall back to per-world structure-block saves.
+			Identifier id = Identifier.fromNamespaceAndPath(MOD_ID, name);
+			var opt = level.getStructureManager().get(id);
+			if (opt.isEmpty()) return false;
+			tpl = opt.get();
+		}
 		StructurePlaceSettings settings = new StructurePlaceSettings();
 		tpl.placeInWorld(level, base, base, settings, level.getRandom(), 2);
 		net.minecraft.core.Vec3i size = tpl.getSize();
@@ -169,6 +176,42 @@ public class Civcraft implements ModInitializer {
 			}
 		}
 		return true;
+	}
+
+	/** Global per-installation blueprint directory: {@code config/civcraft/blueprints/}. */
+	public static java.nio.file.Path globalBlueprintDir() {
+		return FabricLoader.getInstance().getConfigDir().resolve(MOD_ID).resolve("blueprints");
+	}
+
+	private static StructureTemplate loadGlobalBlueprint(ServerLevel level, String name) {
+		java.nio.file.Path path = globalBlueprintDir().resolve(name + ".nbt");
+		if (!java.nio.file.Files.exists(path)) return null;
+		try (java.io.InputStream in = java.nio.file.Files.newInputStream(path)) {
+			net.minecraft.nbt.CompoundTag tag = net.minecraft.nbt.NbtIo.readCompressed(
+					in, net.minecraft.nbt.NbtAccounter.unlimitedHeap());
+			StructureTemplate tpl = new StructureTemplate();
+			tpl.load(level.holderLookup(net.minecraft.core.registries.Registries.BLOCK), tag);
+			return tpl;
+		} catch (Exception e) {
+			LOGGER.warn("[CivCraft] Failed to load blueprint {}: {}", path, e.getMessage());
+			return null;
+		}
+	}
+
+	private static void ensureBlueprintDir() {
+		try {
+			java.nio.file.Path dir = globalBlueprintDir();
+			if (!java.nio.file.Files.exists(dir)) {
+				java.nio.file.Files.createDirectories(dir);
+				java.nio.file.Path readme = dir.resolve("README.txt");
+				java.nio.file.Files.writeString(readme,
+						"Drop vanilla structure-block .nbt saves here:\n" +
+						"  townhall.nbt  smithy.nbt  sawmill.nbt\n" +
+						"They override the built-in buildings across every world.\n");
+			}
+		} catch (Exception e) {
+			LOGGER.warn("[CivCraft] Could not prepare blueprint dir: {}", e.getMessage());
+		}
 	}
 
 	private static void handlePlayerJoin(ServerPlayer player) {
