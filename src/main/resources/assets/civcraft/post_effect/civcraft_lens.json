@@ -11,7 +11,7 @@
 					"location": "civcraft:territory_mask",
 					"width":  256,
 					"height": 256,
-					"bilinear": true
+					"bilinear": false
 				}
 			],
 			"output": "swap"
