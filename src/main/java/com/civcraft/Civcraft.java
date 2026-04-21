@@ -157,13 +157,20 @@ public class Civcraft implements ModInitializer {
 	 */
 	private static boolean placeFromTemplate(ServerLevel level, BlockPos base, String name) {
 		StructureTemplate tpl = loadGlobalBlueprint(level, name);
+		String loadedFrom = "global";
 		if (tpl == null) {
-			// Fall back to per-world structure-block saves.
+			tpl = loadBundledBlueprint(level, name);
+			loadedFrom = "bundled";
+		}
+		if (tpl == null) {
+			// Per-world structure-block saves.
 			Identifier id = Identifier.fromNamespaceAndPath(MOD_ID, name);
 			var opt = level.getStructureManager().get(id);
 			if (opt.isEmpty()) return false;
 			tpl = opt.get();
+			loadedFrom = "per-world";
 		}
+		LOGGER.info("[CivCraft] Placed template {} from {}", name, loadedFrom);
 		StructurePlaceSettings settings = new StructurePlaceSettings();
 		tpl.placeInWorld(level, base, base, settings, level.getRandom(), 2);
 		net.minecraft.core.Vec3i size = tpl.getSize();
@@ -181,6 +188,22 @@ public class Civcraft implements ModInitializer {
 	/** Global per-installation blueprint directory: {@code config/civcraft/blueprints/}. */
 	public static java.nio.file.Path globalBlueprintDir() {
 		return FabricLoader.getInstance().getConfigDir().resolve(MOD_ID).resolve("blueprints");
+	}
+
+	/** Load a template bundled inside the mod jar at data/civcraft/structures/&lt;name&gt;.nbt. */
+	private static StructureTemplate loadBundledBlueprint(ServerLevel level, String name) {
+		String path = "/data/" + MOD_ID + "/structures/" + name + ".nbt";
+		try (java.io.InputStream in = Civcraft.class.getResourceAsStream(path)) {
+			if (in == null) return null;
+			net.minecraft.nbt.CompoundTag tag = net.minecraft.nbt.NbtIo.readCompressed(
+					in, net.minecraft.nbt.NbtAccounter.unlimitedHeap());
+			StructureTemplate tpl = new StructureTemplate();
+			tpl.load(level.holderLookup(net.minecraft.core.registries.Registries.BLOCK), tag);
+			return tpl;
+		} catch (Exception e) {
+			LOGGER.warn("[CivCraft] Failed to load bundled blueprint {}: {}", name, e.getMessage());
+			return null;
+		}
 	}
 
 	private static StructureTemplate loadGlobalBlueprint(ServerLevel level, String name) {
