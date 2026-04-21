@@ -44,10 +44,14 @@ public final class CivcraftHud {
 	private static final long ANIM_DURATION_MS = 1500L;
 	private static long animStartMs = 0;
 
-	// Minimap cache — refreshed every N frames since per-block lookup is costly.
-	private static int[] minimapCache;
-	private static long minimapCacheStamp = 0;
-	private static double minimapCacheX = 0, minimapCacheZ = 0;
+	// Minimap: rendered once to a dynamic GPU texture and blitted per frame.
+	private static final Identifier MINIMAP_TEX_ID = tex("minimap_runtime");
+	private static com.mojang.blaze3d.platform.NativeImage minimapImage;
+	private static net.minecraft.client.renderer.texture.DynamicTexture minimapTexture;
+	private static boolean minimapReady = false;
+	private static int minimapBuiltW = 0, minimapBuiltH = 0;
+	private static long minimapSampleStamp = 0;
+	private static double minimapSampleX = 0, minimapSampleZ = 0;
 
 	private static Identifier tex(String path) {
 		return Identifier.fromNamespaceAndPath(Civcraft.MOD_ID, path);
@@ -205,14 +209,9 @@ public final class CivcraftHud {
 		g.fill(x1, y0, x1 + 1, y1, 0xFFD4AF37);
 
 		sampleMinimap(mc, w, h);
-		int[] cache = minimapCache;
-		if (cache != null) {
-			for (int py = 0; py < h; py++) {
-				for (int px = 0; px < w; px++) {
-					int color = cache[py * w + px];
-					g.fill(x0 + px, y0 + py, x0 + px + 1, y0 + py + 1, color);
-				}
-			}
+		if (minimapReady) {
+			g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
+					MINIMAP_TEX_ID, x0, y0, 0f, 0f, w, h, w, h, w, h);
 		} else {
 			g.fill(x0, y0, x1, y1, 0xFF1A1A1F);
 		}
@@ -222,36 +221,55 @@ public final class CivcraftHud {
 		g.fill(cx - 1, cy - 1, cx + 2, cy + 2, 0xFFFFD44D);
 	}
 
+	/** Resample the minimap into a GPU-uploaded dynamic texture, throttled. */
 	private static void sampleMinimap(Minecraft mc, int w, int h) {
 		if (mc.level == null) return;
 		long now = System.currentTimeMillis();
-		// Re-sample every 400 ms or if the camera moved far.
-		double dx = TopDownMode.anchorX - minimapCacheX;
-		double dz = TopDownMode.anchorZ - minimapCacheZ;
-		if (minimapCache != null && minimapCache.length == w * h
-				&& now - minimapCacheStamp < 400 && dx * dx + dz * dz < 9) return;
-		int blocksAcross = 96;   // world span shown on map
-		int[] cache = new int[w * h];
+		double dx = TopDownMode.anchorX - minimapSampleX;
+		double dz = TopDownMode.anchorZ - minimapSampleZ;
+		if (minimapReady && minimapBuiltW == w && minimapBuiltH == h
+				&& now - minimapSampleStamp < 400 && dx * dx + dz * dz < 9) return;
+
+		if (minimapImage == null || minimapBuiltW != w || minimapBuiltH != h) {
+			if (minimapImage != null) minimapImage.close();
+			minimapImage = new com.mojang.blaze3d.platform.NativeImage(
+					com.mojang.blaze3d.platform.NativeImage.Format.RGBA, w, h, false);
+			if (minimapTexture != null) minimapTexture.close();
+			minimapTexture = new net.minecraft.client.renderer.texture.DynamicTexture(
+					() -> "civcraft_minimap", minimapImage);
+			mc.getTextureManager().register(MINIMAP_TEX_ID, minimapTexture);
+			minimapBuiltW = w;
+			minimapBuiltH = h;
+		}
+
+		int blocksAcross = 96;
 		double originX = TopDownMode.anchorX - blocksAcross / 2.0;
 		double originZ = TopDownMode.anchorZ - blocksAcross / 2.0;
+		BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
 		for (int py = 0; py < h; py++) {
 			for (int px = 0; px < w; px++) {
 				int wx = (int) (originX + (px + 0.5) * blocksAcross / w);
 				int wz = (int) (originZ + (py + 0.5) * blocksAcross / h);
 				int gy = mc.level.getHeight(Heightmap.Types.WORLD_SURFACE, wx, wz);
-				BlockPos sample = new BlockPos(wx, gy - 1, wz);
+				m.set(wx, gy - 1, wz);
 				int col = 0xFF1F1A14;
 				try {
-					col = mc.level.getBlockState(sample).getMapColor(mc.level, sample).col | 0xFF000000;
+					col = mc.level.getBlockState(m).getMapColor(mc.level, m).col | 0xFF000000;
 				} catch (Throwable ignored) {
 				}
-				cache[py * w + px] = col;
+				// NativeImage RGBA format on-disk is ABGR in memory; convert ARGB → ABGR.
+				int r = (col >> 16) & 0xFF;
+				int gg = (col >> 8)  & 0xFF;
+				int b  =  col        & 0xFF;
+				int abgr = 0xFF000000 | (b << 16) | (gg << 8) | r;
+				minimapImage.setPixelABGR(px, py, abgr);
 			}
 		}
-		minimapCache = cache;
-		minimapCacheStamp = now;
-		minimapCacheX = TopDownMode.anchorX;
-		minimapCacheZ = TopDownMode.anchorZ;
+		minimapTexture.upload();
+		minimapReady = true;
+		minimapSampleStamp = now;
+		minimapSampleX = TopDownMode.anchorX;
+		minimapSampleZ = TopDownMode.anchorZ;
 	}
 
 	// ─── Selection info ───────────────────────────────────────────────────────
