@@ -1,0 +1,22 @@
+{
+	"targets": {
+		"swap": { "persistent": false }
+	},
+	"passes": [
+		{
+			"program": "civcraft:civcraft_lens",
+			"inputs": {
+				"DiffuseSampler": { "target": "minecraft:main" },
+				"TerritoryMask":  { "target": "civcraft:territory_mask" }
+			},
+			"output": "swap"
+		},
+		{
+			"program": "minecraft:blit",
+			"inputs": {
+				"DiffuseSampler": { "target": "swap" }
+			},
+			"output": "minecraft:main"
+		}
+	]
+}
