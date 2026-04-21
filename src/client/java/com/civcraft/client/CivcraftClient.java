@@ -193,9 +193,8 @@ public class CivcraftClient implements ClientModInitializer {
 				if (!com.civcraft.client.resource.ResourceState.canAffordTownHall()) {
 					if (client.player != null) {
 						client.player.displayClientMessage(Component.literal(
-								String.format("§cНе хватает ресурсов для ратуши (нужно: %d еды, %d производства)",
-										com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD,
-										com.civcraft.client.resource.ResourceState.TOWN_HALL_PRODUCTION)), true);
+								String.format("§cНе хватает еды для ратуши (нужно %d)",
+										com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD)), true);
 					}
 					return;
 				}
@@ -377,8 +376,7 @@ public class CivcraftClient implements ClientModInitializer {
 				new com.civcraft.network.CancelGhostPayload());
 		if (com.civcraft.client.building.GhostState.kind
 				== com.civcraft.network.SpawnGhostPayload.KIND_TOWNHALL) {
-			com.civcraft.client.resource.ResourceState.food       += com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD;
-			com.civcraft.client.resource.ResourceState.production += com.civcraft.client.resource.ResourceState.TOWN_HALL_PRODUCTION;
+			com.civcraft.client.resource.ResourceState.food += com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD;
 		}
 	}
 

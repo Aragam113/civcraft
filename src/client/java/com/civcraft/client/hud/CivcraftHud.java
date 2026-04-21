@@ -116,9 +116,14 @@ public final class CivcraftHud {
 	private static void drawResourceBar(GuiGraphics g, Minecraft mc) {
 		int sw = hudWidth(mc);
 		ItemStack[] icons = { RES_FOOD, RES_PRODUCTION, RES_GOLD, RES_SCIENCE, RES_CULTURE };
-		int[] values = {
-				ResourceState.food, ResourceState.production, ResourceState.gold,
-				ResourceState.science, ResourceState.culture,
+		// Food and gold are STORED balances; production/science/culture are
+		// Civ6-style per-turn YIELDS — render with a leading "+".
+		String[] labels = {
+				Integer.toString(ResourceState.food),
+				"+" + ResourceState.production,
+				Integer.toString(ResourceState.gold),
+				"+" + ResourceState.science,
+				"+" + ResourceState.culture,
 		};
 		int slotW = 72;
 		int rowH = 20;
@@ -131,7 +136,7 @@ public final class CivcraftHud {
 		for (int i = 0; i < icons.length; i++) {
 			int ix = x0 + i * slotW;
 			g.renderItem(icons[i], ix + 3, y0);
-			g.drawString(mc.font, "§e" + values[i], ix + 24, y0 + 5, 0xFFFFFFFF, false);
+			g.drawString(mc.font, "§e" + labels[i], ix + 24, y0 + 5, 0xFFFFFFFF, false);
 		}
 	}
 

@@ -71,6 +71,71 @@ public class Civcraft implements ModInitializer {
 	/** Confirmed builds currently under construction — multiple allowed per player. */
 	public static final java.util.Set<GhostBuilding> ACTIVE_BUILDS = ConcurrentHashMap.newKeySet();
 
+	/** Track every finished building per player so we can sum production yields. */
+	public static final class OwnedBuilding {
+		public final BlockPos pos;
+		public final byte kind;
+		public OwnedBuilding(BlockPos p, byte k) { pos = p; kind = k; }
+	}
+	public static final java.util.Map<UUID, java.util.List<OwnedBuilding>> PLAYER_BUILDINGS = new ConcurrentHashMap<>();
+
+	/** Production points the player gets PER TURN from each building type. */
+	private static int productionYieldOf(byte kind) {
+		return switch (kind) {
+			case SpawnGhostPayload.KIND_TOWNHALL   -> 2;
+			case SpawnGhostPayload.KIND_SAWMILL    -> 2;
+			case SpawnGhostPayload.KIND_QUARRY     -> 3;
+			case SpawnGhostPayload.KIND_SMITHY     -> 1;
+			case SpawnGhostPayload.KIND_STOREHOUSE -> 1;
+			default -> 0;
+		};
+	}
+
+	/** Science yield per turn per building. */
+	private static int scienceYieldOf(byte kind) {
+		return switch (kind) {
+			case SpawnGhostPayload.KIND_TOWNHALL -> 1;
+			case SpawnGhostPayload.KIND_SMITHY   -> 1;  // research-like workshop tech
+			default -> 0;
+		};
+	}
+
+	/** Culture yield per turn per building. */
+	private static int cultureYieldOf(byte kind) {
+		return switch (kind) {
+			case SpawnGhostPayload.KIND_TOWNHALL -> 1;
+			default -> 0;
+		};
+	}
+
+	public static int totalProductionYield(UUID playerId) {
+		int y = 0;
+		for (var b : PLAYER_BUILDINGS.getOrDefault(playerId, java.util.List.of())) {
+			y += productionYieldOf(b.kind);
+		}
+		return y;
+	}
+
+	/** Production cost for gradual build. 0 = free (settler-founded townhall). */
+	private static int productionCostOf(byte kind) {
+		return switch (kind) {
+			case SpawnGhostPayload.KIND_TOWNHALL   -> 0;
+			case SpawnGhostPayload.KIND_STOREHOUSE -> 6;
+			case SpawnGhostPayload.KIND_SAWMILL    -> 10;
+			case SpawnGhostPayload.KIND_QUARRY     -> 10;
+			case SpawnGhostPayload.KIND_SMITHY     -> 15;
+			default -> 5;
+		};
+	}
+
+	/** Gold cost — spent at confirm from the stored pool. */
+	private static int goldCostOf(byte kind) {
+		return switch (kind) {
+			case SpawnGhostPayload.KIND_SMITHY -> 10;
+			default -> 0;
+		};
+	}
+
 	public enum CarrierPhase { TO_HALL, WAIT_HALL, TO_GHOST, WAIT_GHOST }
 	public static final class CarrierJob {
 		public final GhostBuilding target;
@@ -81,7 +146,9 @@ public class Civcraft implements ModInitializer {
 	public static final java.util.Map<UUID, CarrierJob> CARRIERS = new ConcurrentHashMap<>();
 	private static final int CARRIER_WAIT_TICKS = 10;
 	private static final int DELIVERY_TRIPS = 9;  // 3 builders × 3 trips = smithy/sawmill done
-	public static final int GHOST_DRAG_RADIUS = 5;  // blocks the ghost can be moved from its origin
+	public static final int GHOST_DRAG_RADIUS = 5;
+	private static final int TICKS_PER_TURN = 200;  // ≈10 real seconds per Civ-style turn
+	private static int turnTickCounter = 0;
 	private static final double LUMBERJACK_STEP = 0.08;
 	private static final int LUMBERJACK_SEARCH_RADIUS = 48;
 	private static final int CHOP_DURATION_TICKS = 40;
@@ -128,6 +195,7 @@ public class Civcraft implements ModInitializer {
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickMovement);
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickLumberjacks);
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickCarriers);
+		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickProductionTurns);
 
 		CommandRegistrationCallback.EVENT.register((dispatcher, registry, env) ->
 				dispatcher.register(Commands.literal("civcraft")
@@ -255,7 +323,7 @@ public class Civcraft implements ModInitializer {
 		// TODO: load saved counts from player NBT instead of resetting.
 		int[] starting = PLAYER_RESOURCES.computeIfAbsent(player.getUUID(),
 				u -> new int[]{30, 40, 10, 0, 0});
-		sendResources(player, starting);
+		sendCivResources(player, starting);
 
 		// Only spawn the starter settler squad the FIRST time a player enters
 		// this world — the tag persists in the player's NBT, so re-joining no
@@ -334,35 +402,52 @@ public class Civcraft implements ModInitializer {
 			sendGhostCleared(player);
 			player.displayClientMessage(Component.literal("§6Ратуша заложена. Строители прибыли."), true);
 		} else {
-			// Builder ghost — instant build on confirm, Civ-style costs
-			// (production / gold). Consumes one builder charge.
+			// Builder ghost. Check gold cost (instant deduct); if production yield
+			// meets or exceeds the cost we build now, otherwise start a gradual
+			// construction that accrues production each "turn".
 			int[] res = PLAYER_RESOURCES.computeIfAbsent(player.getUUID(), u -> new int[]{30, 40, 10, 0, 0});
-			int needProd = 0, needGold = 0;
-			String name;
-			switch (g.kind) {
-				case SpawnGhostPayload.KIND_SMITHY     -> { needProd = 50; needGold = 10; name = "Кузница"; }
-				case SpawnGhostPayload.KIND_SAWMILL    -> { needProd = 30; name = "Лесопилка"; }
-				case SpawnGhostPayload.KIND_STOREHOUSE -> { needProd = 20; name = "Склад"; }
-				case SpawnGhostPayload.KIND_QUARRY     -> { needProd = 30; name = "Каменоломня"; }
-				default -> name = "Здание";
-			}
-			if (res[1] < needProd || res[2] < needGold) {
+			int goldCost = goldCostOf(g.kind);
+			int prodCost = productionCostOf(g.kind);
+			int yield    = totalProductionYield(player.getUUID());
+			String name = switch (g.kind) {
+				case SpawnGhostPayload.KIND_SMITHY     -> "Кузница";
+				case SpawnGhostPayload.KIND_SAWMILL    -> "Лесопилка";
+				case SpawnGhostPayload.KIND_STOREHOUSE -> "Склад";
+				case SpawnGhostPayload.KIND_QUARRY     -> "Каменоломня";
+				default -> "Здание";
+			};
+			if (res[2] < goldCost) {
 				player.displayClientMessage(Component.literal(String.format(
-						"§cНе хватает ресурсов (нужно: %d производства, %d золота)",
-						needProd, needGold)), true);
+						"§cНе хватает золота (нужно %d)", goldCost)), true);
 				return;
 			}
-			res[1] -= needProd;
-			res[2] -= needGold;
-			sendResources(player, res);
-			completeBuilding(level, g);
+			res[2] -= goldCost;
+			// Consume a builder charge up front.
 			for (UUID u : g.units) {
 				Entity b = level.getEntity(u);
 				if (b != null) { b.discard(); MOVE_TARGETS.remove(u); break; }
 			}
-			PENDING_GHOSTS.remove(player.getUUID());
-			sendGhostCleared(player);
-			player.displayClientMessage(Component.literal("§6" + name + " построена."), true);
+
+			if (yield >= prodCost) {
+				// Yield covers the cost in a single turn — materialize immediately.
+				completeBuilding(level, g);
+				sendCivResources(player, res);
+				PENDING_GHOSTS.remove(player.getUUID());
+				sendGhostCleared(player);
+				player.displayClientMessage(Component.literal("§6" + name + " построена."), true);
+			} else {
+				// Multi-turn construction. Ghost stays visible as a "site".
+				g.confirmed = true;
+				g.target = prodCost;
+				g.progress = 0;
+				PENDING_GHOSTS.remove(player.getUUID());
+				ACTIVE_BUILDS.add(g);
+				sendCivResources(player, res);
+				sendGhostCleared(player);
+				int turns = Math.max(1, (prodCost + yield - 1) / Math.max(1, yield));
+				player.displayClientMessage(Component.literal(String.format(
+						"§6%s строится: %d/%d · ~%d ход(ов)", name, g.progress, g.target, turns)), true);
+			}
 		}
 	}
 
@@ -446,6 +531,34 @@ public class Civcraft implements ModInitializer {
 		}
 	}
 
+	/** One "turn" every TICKS_PER_TURN server ticks: accumulate production into
+	 *  every in-progress build, materialize any that have completed. */
+	private static void tickProductionTurns(net.minecraft.server.MinecraftServer server) {
+		if (++turnTickCounter < TICKS_PER_TURN) return;
+		turnTickCounter = 0;
+		if (ACTIVE_BUILDS.isEmpty()) return;
+		for (var it = ACTIVE_BUILDS.iterator(); it.hasNext(); ) {
+			GhostBuilding g = it.next();
+			int yield = totalProductionYield(g.owner);
+			if (yield <= 0) continue;
+			g.progress += yield;
+			if (g.progress >= g.target) {
+				for (ServerLevel lv : server.getAllLevels()) {
+					if (lv.isLoaded(g.pos)) {
+						completeBuilding(lv, g);
+						break;
+					}
+				}
+				it.remove();
+				ServerPlayer owner = server.getPlayerList().getPlayer(g.owner);
+				if (owner != null) {
+					owner.displayClientMessage(Component.literal(
+							"§6Постройка завершена."), true);
+				}
+			}
+		}
+	}
+
 	private static BlockPos findNearestTownHall(ServerLevel lv, BlockPos from) {
 		int r = 64;
 		BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
@@ -481,6 +594,27 @@ public class Civcraft implements ModInitializer {
 			case SpawnGhostPayload.KIND_STOREHOUSE -> buildStorehouse(level, g.pos);
 			case SpawnGhostPayload.KIND_QUARRY     -> buildQuarry(level, g.pos);
 		}
+		// Register the finished building so its yield counts in future turns.
+		PLAYER_BUILDINGS.computeIfAbsent(g.owner, u -> new java.util.concurrent.CopyOnWriteArrayList<>())
+				.add(new OwnedBuilding(g.pos, g.kind));
+		// Push fresh yield numbers to the owner so the HUD updates immediately.
+		ServerPlayer owner = level.getServer().getPlayerList().getPlayer(g.owner);
+		if (owner != null) {
+			int[] r = PLAYER_RESOURCES.computeIfAbsent(g.owner, u -> new int[]{30, 40, 10, 0, 0});
+			sendCivResources(owner, r);
+		}
+	}
+
+	/** Food/gold are stored balances; production/science/culture are yields. */
+	private static void sendCivResources(ServerPlayer player, int[] stored) {
+		int prod = totalProductionYield(player.getUUID());
+		int science = 0, culture = 0;
+		for (var b : PLAYER_BUILDINGS.getOrDefault(player.getUUID(), java.util.List.of())) {
+			science += scienceYieldOf(b.kind);
+			culture += cultureYieldOf(b.kind);
+		}
+		ServerPlayNetworking.send(player,
+				new ResourceSyncPayload(stored[0], prod, stored[2], science, culture));
 	}
 
 	private static void buildStorehouse(ServerLevel level, BlockPos base) {
