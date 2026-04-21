@@ -178,6 +178,9 @@ public class Civcraft implements ModInitializer {
 		net.minecraft.core.Vec3i size = tpl.getSize();
 		BlockPos anchor = base.offset(-size.getX() / 2, 0, -size.getZ() / 2);
 		StructurePlaceSettings settings = new StructurePlaceSettings();
+		// Skip air + structure-block markers from the template so existing world
+		// blocks (grass, dirt, etc.) show through where the template has voids.
+		settings.addProcessor(net.minecraft.world.level.levelgen.structure.templatesystem.BlockIgnoreProcessor.STRUCTURE_AND_AIR);
 		tpl.placeInWorld(level, anchor, anchor, settings, level.getRandom(), 2);
 		for (int x = 0; x < size.getX(); x++) {
 			for (int y = 0; y < size.getY(); y++) {
