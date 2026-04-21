@@ -64,10 +64,12 @@ public final class LensPostEffect {
 
 		PostChain chain;
 		try {
+			// externalTargets declares which RENDER TARGETS the chain references
+			// from outside (not textures — those are resolved via TextureManager).
+			// Our chain reads + writes minecraft:main, so that must be listed.
 			chain = mc.getShaderManager().getPostChain(POST_CHAIN_ID,
-					java.util.Set.of(MASK_TEXTURE_ID));
+					java.util.Set.of(PostChain.MAIN_TARGET_ID));
 		} catch (Throwable t) {
-			// Shader failed to compile or config missing — silently skip.
 			return;
 		}
 		if (chain == null) return;
