@@ -63,30 +63,48 @@ public final class CivcraftHud {
 		animStartMs = System.currentTimeMillis();
 	}
 
+	/** Target "virtual" guiScale for our HUD — fixed regardless of user setting. */
+	private static final double HUD_SCALE = 2.0;
+
+	/** Divisor applied to mouse coords when hit-testing HUD elements. */
+	public static double hudMouseScale(Minecraft mc) { return HUD_SCALE; }
+
+	/** Width/height of the HUD frame in virtual pixels (raw / HUD_SCALE). */
+	public static int hudWidth(Minecraft mc)  { return (int)(mc.getWindow().getScreenWidth() / HUD_SCALE); }
+	public static int hudHeight(Minecraft mc) { return (int)(mc.getWindow().getScreenHeight() / HUD_SCALE); }
+
 	private static void render(GuiGraphics graphics, DeltaTracker tracker) {
 		if (!TopDownMode.active) return;
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.mouseHandler == null || mc.getWindow() == null) return;
 
-		double scale = mc.getWindow().getGuiScale();
+		// Draw HUD in "virtual" coordinates pinned to HUD_SCALE (=2). This keeps
+		// panels the same physical pixel size no matter what GUI scale the user
+		// picks — avoids the panel eating the screen at scale 4+.
+		double guiScale = mc.getWindow().getGuiScale();
+		double factor = guiScale / HUD_SCALE;
+		graphics.pose().pushMatrix();
+		graphics.pose().scale((float) factor, (float) factor);
 
 		drawResourceBar(graphics, mc);
 		drawPlanetButton(graphics, mc);
 		drawBottomBar(graphics, mc);
-		drawSelectionRect(graphics, mc, scale);
+		drawSelectionRect(graphics, mc);
 		drawGhostButtons(graphics, mc);
 
-		// Cursor last, over everything.
-		int x = (int) (mc.mouseHandler.xpos() / scale);
-		int y = (int) (mc.mouseHandler.ypos() / scale);
+		// Cursor last, over everything — already in virtual-pixel space.
+		int x = (int) (mc.mouseHandler.xpos() / HUD_SCALE);
+		int y = (int) (mc.mouseHandler.ypos() / HUD_SCALE);
 		graphics.blit(CURSOR, x, y, CURSOR_SIZE, CURSOR_SIZE,
 				0f, 0f, (float) CURSOR_SIZE, (float) CURSOR_SIZE);
+
+		graphics.pose().popMatrix();
 	}
 
 	// ─── Top bar ──────────────────────────────────────────────────────────────
 
 	private static void drawResourceBar(GuiGraphics g, Minecraft mc) {
-		int sw = mc.getWindow().getGuiScaledWidth();
+		int sw = hudWidth(mc);
 		Identifier[] icons = { RES_FOOD, RES_WOOD, RES_STONE, RES_COAL, RES_IRON, RES_GOLD };
 		int[] values = {
 				ResourceState.food, ResourceState.wood, ResourceState.stone,
@@ -113,20 +131,19 @@ public final class CivcraftHud {
 	// ─── Planet (menu) button ─────────────────────────────────────────────────
 
 	public static int[] planetRect(Minecraft mc, double scale) {
-		int sw = mc.getWindow().getGuiScaledWidth();
+		int sw = hudWidth(mc);
 		int x0 = sw - 8 - PLANET_SIZE;
 		int y0 = 8;
 		return new int[]{x0, y0, x0 + PLANET_SIZE, y0 + PLANET_SIZE};
 	}
 
 	public static boolean isMouseOverPlanet(Minecraft mc) {
-		double scale = mc.getWindow().getGuiScale();
-		int[] r = planetRect(mc, scale);
-		return pointIn(mc, scale, r);
+		int[] r = planetRect(mc, 0);
+		return pointIn(mc, r);
 	}
 
 	private static void drawPlanetButton(GuiGraphics g, Minecraft mc) {
-		int[] p = planetRect(mc, mc.getWindow().getGuiScale());
+		int[] p = planetRect(mc, 0);
 		boolean hover = isMouseOverPlanet(mc);
 		int frame = 0;
 		long now = System.currentTimeMillis();
@@ -146,8 +163,8 @@ public final class CivcraftHud {
 	// ─── Bottom bar (3 zones) ─────────────────────────────────────────────────
 
 	private static void drawBottomBar(GuiGraphics g, Minecraft mc) {
-		int sw = mc.getWindow().getGuiScaledWidth();
-		int sh = mc.getWindow().getGuiScaledHeight();
+		int sw = hudWidth(mc);
+		int sh = hudHeight(mc);
 		int y0 = sh - BOTTOM_BAR_H;
 		// Base strip — dark panel with gold top border.
 		g.fill(0, y0, sw, sh, 0xEE0A0604);
@@ -265,8 +282,8 @@ public final class CivcraftHud {
 	// ─── Command grid (3×3) ───────────────────────────────────────────────────
 
 	public static int[] perkRect(Minecraft mc, double scale, int slot) {
-		int sw = mc.getWindow().getGuiScaledWidth();
-		int sh = mc.getWindow().getGuiScaledHeight();
+		int sw = hudWidth(mc);
+		int sh = hudHeight(mc);
 		int cmdW = CMD_COLS * (CMD_SLOT + CMD_GAP);
 		int baseX = sw - FRAME_PAD - cmdW;
 		int baseY = sh - BOTTOM_BAR_H + FRAME_PAD + 8;
@@ -284,10 +301,9 @@ public final class CivcraftHud {
 	public static int mousePerkSlot(Minecraft mc) {
 		Identifier[] slots = commandSlots();
 		if (slots == null) return -1;
-		double scale = mc.getWindow().getGuiScale();
 		for (int i = 0; i < slots.length; i++) {
 			if (slots[i] == null) continue;
-			if (pointIn(mc, scale, perkRect(mc, scale, i))) return i;
+			if (pointIn(mc, perkRect(mc, 0, i))) return i;
 		}
 		return -1;
 	}
@@ -329,12 +345,12 @@ public final class CivcraftHud {
 
 	// ─── Selection rectangle (drag) ───────────────────────────────────────────
 
-	private static void drawSelectionRect(GuiGraphics g, Minecraft mc, double scale) {
+	private static void drawSelectionRect(GuiGraphics g, Minecraft mc) {
 		if (!SelectionState.dragging) return;
-		int x0 = (int) (Math.min(SelectionState.startX, SelectionState.currentX) / scale);
-		int y0 = (int) (Math.min(SelectionState.startY, SelectionState.currentY) / scale);
-		int x1 = (int) (Math.max(SelectionState.startX, SelectionState.currentX) / scale);
-		int y1 = (int) (Math.max(SelectionState.startY, SelectionState.currentY) / scale);
+		int x0 = (int) (Math.min(SelectionState.startX, SelectionState.currentX) / HUD_SCALE);
+		int y0 = (int) (Math.min(SelectionState.startY, SelectionState.currentY) / HUD_SCALE);
+		int x1 = (int) (Math.max(SelectionState.startX, SelectionState.currentX) / HUD_SCALE);
+		int y1 = (int) (Math.max(SelectionState.startY, SelectionState.currentY) / HUD_SCALE);
 		if (x1 - x0 < 2 || y1 - y0 < 2) return;
 		g.fill(x0, y0, x1, y1, 0x33D4AF37);
 		g.fill(x0, y0, x1, y0 + 1, 0xFFD4AF37);
@@ -349,8 +365,8 @@ public final class CivcraftHud {
 	private static final int GHOST_BTN_GAP  = 12;
 
 	public static int[] ghostButtonRect(Minecraft mc, int idx) {
-		int sw = mc.getWindow().getGuiScaledWidth();
-		int sh = mc.getWindow().getGuiScaledHeight();
+		int sw = hudWidth(mc);
+		int sh = hudHeight(mc);
 		int totalW = GHOST_BTN_SIZE * 2 + GHOST_BTN_GAP;
 		int x0Base = (sw - totalW) / 2;
 		int y0 = sh - BOTTOM_BAR_H - GHOST_BTN_SIZE - 16;
@@ -361,9 +377,8 @@ public final class CivcraftHud {
 	public static int mouseGhostButton(Minecraft mc) {
 		if (!com.civcraft.client.building.GhostState.isActive()
 				|| com.civcraft.client.building.GhostState.confirmed) return -1;
-		double scale = mc.getWindow().getGuiScale();
-		int mx = (int) (mc.mouseHandler.xpos() / scale);
-		int my = (int) (mc.mouseHandler.ypos() / scale);
+		int mx = (int) (mc.mouseHandler.xpos() / HUD_SCALE);
+		int my = (int) (mc.mouseHandler.ypos() / HUD_SCALE);
 		for (int i = 0; i < 2; i++) {
 			int[] r = ghostButtonRect(mc, i);
 			if (mx >= r[0] && mx <= r[2] && my >= r[1] && my <= r[3]) return i;
@@ -411,9 +426,9 @@ public final class CivcraftHud {
 		g.fill(x1 - 1, y0, x1, y1, 0xFFD4AF37);
 	}
 
-	private static boolean pointIn(Minecraft mc, double scale, int[] r) {
-		int mx = (int) (mc.mouseHandler.xpos() / scale);
-		int my = (int) (mc.mouseHandler.ypos() / scale);
+	private static boolean pointIn(Minecraft mc, int[] r) {
+		int mx = (int) (mc.mouseHandler.xpos() / HUD_SCALE);
+		int my = (int) (mc.mouseHandler.ypos() / HUD_SCALE);
 		return mx >= r[0] && mx <= r[2] && my >= r[1] && my <= r[3];
 	}
 

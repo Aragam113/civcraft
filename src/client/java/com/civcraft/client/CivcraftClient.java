@@ -134,7 +134,7 @@ public class CivcraftClient implements ClientModInitializer {
 	}
 
 	private void openGameMenu(Minecraft client) {
-		client.setScreen(new com.civcraft.client.gui.CivcraftMenuScreen());
+		client.setScreen(new com.civcraft.client.gui.CivcraftWikiScreen());
 	}
 
 	private void handlePerkKey(Minecraft client) {
