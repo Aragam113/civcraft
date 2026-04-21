@@ -76,6 +76,15 @@ public class CivcraftClient implements ClientModInitializer {
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, mc) -> {
 			ticksSinceJoin = 0;
 		});
+
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> {
+			// Drop client-only state so the next tick can't fire a packet into
+			// a dead connection (causes "Cannot send packets when not in game").
+			com.civcraft.client.building.GhostState.clear();
+			SelectionState.clearAll();
+			TopDownMode.active = false;
+			ticksSinceJoin = -1;
+		});
 	}
 
 	private static KeyMapping bind(String key, int glfwKey) {
@@ -84,6 +93,11 @@ public class CivcraftClient implements ClientModInitializer {
 	}
 
 	private void clientTick(Minecraft client) {
+		// During world-exit the connection tears down before DISCONNECT fires;
+		// skip all RTS logic if we aren't actively in a level.
+		if (client.level == null || client.player == null || client.player.connection == null) {
+			return;
+		}
 		if (ticksSinceJoin >= 0) {
 			ticksSinceJoin++;
 			// Auto-enter RTS once the world has had 2s to load. Only auto-toggle
@@ -366,7 +380,14 @@ public class CivcraftClient implements ClientModInitializer {
 		}
 	}
 
+	private static boolean canSend(Minecraft client) {
+		return client.player != null && client.player.connection != null
+				&& client.getConnection() != null;
+	}
+
 	private void sendGhostPos(int x, int y, int z) {
+		Minecraft client = Minecraft.getInstance();
+		if (!canSend(client)) return;
 		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
 				new com.civcraft.network.UpdateGhostPosPayload(x, y, z));
 	}
