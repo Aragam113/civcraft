@@ -98,6 +98,7 @@ public final class CivcraftHud {
 
 		drawResourceBar(graphics, mc);
 		drawPlanetButton(graphics, mc);
+		drawLensButton(graphics, mc);
 		drawTurnPanel(graphics, mc);
 		drawEndTurnButton(graphics, mc);
 		drawBottomBar(graphics, mc);
@@ -172,6 +173,42 @@ public final class CivcraftHud {
 				PLANET_SHEET, p[0], p[1], u, 0f,
 				PLANET_SIZE, PLANET_SIZE, PLANET_SRC, PLANET_SRC,
 				PLANET_SRC * PLANET_FRAMES, PLANET_SRC);
+	}
+
+	// ─── Lens button (top-right, under the planet) ────────────────────────────
+
+	private static final int LENS_SIZE = 32;
+
+	public static int[] lensRect(Minecraft mc) {
+		int[] p = planetRect(mc, 0);
+		int x0 = p[2] - LENS_SIZE;
+		int y0 = p[3] + 6;
+		return new int[]{x0, y0, x0 + LENS_SIZE, y0 + LENS_SIZE};
+	}
+
+	public static boolean isMouseOverLens(Minecraft mc) {
+		return pointIn(mc, lensRect(mc));
+	}
+
+	private static void drawLensButton(GuiGraphics g, Minecraft mc) {
+		int[] r = lensRect(mc);
+		boolean hover = isMouseOverLens(mc);
+		boolean active = com.civcraft.client.lens.LensState.mode
+				!= com.civcraft.client.lens.LensState.Mode.NONE;
+		int border = hover ? 0xFFFFDA66 : (active ? 0xFF7AC8FF : 0xFFD4AF37);
+		int bg     = hover ? 0xEE2A1F10 : 0xDD120B04;
+		g.fill(r[0] - 2, r[1] - 2, r[2] + 2, r[3] + 2, border);
+		g.fill(r[0],     r[1],     r[2],     r[3],     bg);
+		// Use a spyglass item as the lens icon.
+		ItemStack icon = new ItemStack(Items.SPYGLASS);
+		int ix = r[0] + (LENS_SIZE - 16) / 2;
+		int iy = r[1] + (LENS_SIZE - 16) / 2;
+		g.renderItem(icon, ix, iy);
+		// Small label under the icon shows the current mode name.
+		String label = "§e" + com.civcraft.client.lens.LensState.mode.localized();
+		int tw = mc.font.width(label);
+		int tx = r[0] + (LENS_SIZE - tw) / 2;
+		g.drawString(mc.font, label, tx, r[3] + 2, 0xFFFFFFFF, false);
 	}
 
 	// ─── Turn / year / era panel + End Turn button ────────────────────────────

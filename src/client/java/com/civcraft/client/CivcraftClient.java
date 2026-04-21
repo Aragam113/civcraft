@@ -337,6 +337,11 @@ public class CivcraftClient implements ClientModInitializer {
 				prevLmb = true;
 				return;
 			}
+			if (com.civcraft.client.hud.CivcraftHud.isMouseOverLens(client)) {
+				com.civcraft.client.lens.LensState.cycle();
+				prevLmb = true;
+				return;
+			}
 			if (SelectionState.kind != SelectionState.Kind.NONE) {
 				int slot = com.civcraft.client.hud.CivcraftHud.mousePerkSlot(client);
 				if (slot >= 0) {
