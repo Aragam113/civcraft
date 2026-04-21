@@ -577,18 +577,21 @@ public class CivcraftClient implements ClientModInitializer {
 			return;
 		}
 
-		// Second pass: expand each direct hit to its full squad (all squad
-		// members within SQUAD_LINK_RADIUS). Keep selection kind consistent —
-		// a builder hit yields a builder squad, a settler hit a settler squad.
+		// Expand each direct hit to its entire squad via the persistent squad
+		// id baked into the custom name. Units with sid=0 (legacy / no group)
+		// stay as single-unit selections so they don't drag everyone.
 		boolean anyBuilder = hits.stream().anyMatch(CivcraftClient::isBuilder);
+		java.util.Set<Integer> hitSids = new java.util.HashSet<>();
 		java.util.Set<UUID> squad = new java.util.HashSet<>();
 		for (Entity hit : hits) {
+			int sid = squadId(hit);
+			if (sid > 0) hitSids.add(sid);
+			else squad.add(hit.getUUID());
+		}
+		if (!hitSids.isEmpty()) {
 			for (Entity other : client.level.entitiesForRendering()) {
 				if (!isSquadMember(other)) continue;
-				if (isBuilder(other) != anyBuilder) continue;
-				if (other.distanceTo(hit) <= SQUAD_LINK_RADIUS) {
-					squad.add(other.getUUID());
-				}
+				if (hitSids.contains(squadId(other))) squad.add(other.getUUID());
 			}
 		}
 		SelectionState.setSquad(squad,
@@ -643,6 +646,17 @@ public class CivcraftClient implements ClientModInitializer {
 	public static boolean isBuilder(Entity e) {
 		if (e.getCustomName() == null) return false;
 		return e.getCustomName().getString().startsWith("⛏ ");
+	}
+
+	/** Extract the " #N" squad marker the server embeds into custom names.
+	 *  Returns 0 for legacy units that don't have one. */
+	public static int squadId(Entity e) {
+		if (e.getCustomName() == null) return 0;
+		String s = e.getCustomName().getString();
+		int hash = s.lastIndexOf('#');
+		if (hash < 0 || hash == s.length() - 1) return 0;
+		try { return Integer.parseInt(s.substring(hash + 1).trim()); }
+		catch (NumberFormatException ex) { return 0; }
 	}
 
 	private void syncGlowWithSelection(Minecraft client) {

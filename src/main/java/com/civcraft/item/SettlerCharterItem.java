@@ -21,6 +21,19 @@ public class SettlerCharterItem extends Item {
 	private static final String[] BUILDER_NAMES = {"⛏ Строитель", "⛏ Строитель", "⛏ Строитель"};
 	public static final String LUMBERJACK_NAME = "🪓 Лесоруб";
 
+	/** Monotonic squad-id generator. Appended to every member's custom name so
+	 *  the client can group units back into their original squad without
+	 *  relying on physical proximity (which breaks when squads stand close). */
+	private static final java.util.concurrent.atomic.AtomicInteger SQUAD_COUNTER =
+			new java.util.concurrent.atomic.AtomicInteger(1);
+
+	public static int nextSquadId() { return SQUAD_COUNTER.getAndIncrement(); }
+
+	/** Encode: "⚔ Поселенец §8#N" — the trailing "#N" is what clients parse. */
+	private static Component labelWithSquadId(String baseName, int squadId) {
+		return Component.literal(baseName + " §8#" + squadId);
+	}
+
 	public SettlerCharterItem(Properties properties) {
 		super(properties);
 	}
@@ -59,11 +72,12 @@ public class SettlerCharterItem extends Item {
 		double cx = townHallPos.getX() + 0.5;
 		double cy = townHallPos.getY();
 		double cz = townHallPos.getZ() + 0.5;
+		int sid = nextSquadId();
 
 		SettlerEntity leader = ModEntities.SETTLER.create(world, EntitySpawnReason.MOB_SUMMONED);
 		if (leader != null) {
 			leader.snapTo(cx + 1.5, cy, cz + 0.5, 0f, 0f);
-			leader.setCustomName(Component.literal("Отряд"));
+			leader.setCustomName(labelWithSquadId("Отряд", sid));
 			leader.setCustomNameVisible(false);
 			leader.setPersistenceRequired();
 			tagAsSquadMember(leader);
@@ -76,7 +90,7 @@ public class SettlerCharterItem extends Item {
 			double vx = cx + 1.5;
 			double vz = cz + (i - 1) * 1.1;
 			v.snapTo(vx, cy, vz, 0f, 0f);
-			v.setCustomName(Component.literal(SQUAD_NAMES[i]));
+			v.setCustomName(labelWithSquadId(SQUAD_NAMES[i], sid));
 			v.setCustomNameVisible(true);
 			v.setPersistenceRequired();
 			tagAsSquadMember(v);
@@ -86,7 +100,7 @@ public class SettlerCharterItem extends Item {
 		Mule mule = EntityType.MULE.create(world, EntitySpawnReason.MOB_SUMMONED);
 		if (mule != null) {
 			mule.snapTo(cx + 2.5, cy, cz + 0.5, 0f, 0f);
-			mule.setCustomName(Component.literal("⚔ Мул"));
+			mule.setCustomName(labelWithSquadId("⚔ Мул", sid));
 			mule.setCustomNameVisible(true);
 			mule.setPersistenceRequired();
 			tagAsSquadMember(mule);
@@ -98,12 +112,13 @@ public class SettlerCharterItem extends Item {
 		double cx = anchor.getX() + 0.5;
 		double cy = anchor.getY();
 		double cz = anchor.getZ() + 0.5;
+		int sid = nextSquadId();
 		for (int i = 0; i < BUILDER_NAMES.length; i++) {
 			Villager v = EntityType.VILLAGER.create(world, EntitySpawnReason.MOB_SUMMONED);
 			if (v == null) continue;
 			double vx = cx + (i - 1) * 1.1;
 			v.snapTo(vx, cy, cz, 0f, 0f);
-			v.setCustomName(Component.literal(BUILDER_NAMES[i]));
+			v.setCustomName(labelWithSquadId(BUILDER_NAMES[i], sid));
 			v.setCustomNameVisible(true);
 			v.setPersistenceRequired();
 			tagAsSquadMember(v);
@@ -114,8 +129,9 @@ public class SettlerCharterItem extends Item {
 	public static Villager spawnLumberjackAt(ServerLevel world, BlockPos anchor) {
 		Villager v = EntityType.VILLAGER.create(world, EntitySpawnReason.MOB_SUMMONED);
 		if (v == null) return null;
+		int sid = nextSquadId();
 		v.snapTo(anchor.getX() + 0.5, anchor.getY(), anchor.getZ() + 0.5, 0f, 0f);
-		v.setCustomName(Component.literal(LUMBERJACK_NAME));
+		v.setCustomName(labelWithSquadId(LUMBERJACK_NAME, sid));
 		v.setCustomNameVisible(true);
 		v.setPersistenceRequired();
 		tagAsSquadMember(v);

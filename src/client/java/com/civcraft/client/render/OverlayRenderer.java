@@ -47,35 +47,57 @@ public final class OverlayRenderer {
 		if (consumers == null) return;
 		VertexConsumer buffer = consumers.getBuffer(RenderTypes.LINES);
 
-		// Pass 1: per-unit rings, accumulate centroid of the moving selection.
+		// Pass 1: group members by squad id, draw ONE ring per squad around
+		// the entire cluster. Individual entities with sid=0 (legacy/solo)
+		// get their own tiny ring.
+		java.util.Map<Integer, java.util.List<Entity>> squads = new java.util.HashMap<>();
+		for (Entity e : level.entitiesForRendering()) {
+			if (!CivcraftClient.isSquadMember(e)) continue;
+			int sid = CivcraftClient.squadId(e);
+			if (sid == 0) sid = -Math.abs(e.getUUID().hashCode());  // unique bucket per loose unit
+			squads.computeIfAbsent(sid, k -> new java.util.ArrayList<>()).add(e);
+		}
+
 		double sumX = 0, sumZ = 0;
 		double sumTx = 0, sumTy = 0, sumTz = 0;
 		int movingCount = 0;
 
-		for (Entity e : level.entitiesForRendering()) {
-			if (!CivcraftClient.isSquadMember(e)) continue;
-			boolean selected = SelectionState.selected.contains(e.getUUID());
-
-			int rgb = selected ? 0xFFFFFF : 0x888888;
+		for (java.util.List<Entity> members : squads.values()) {
+			boolean anySelected = false;
+			double cx = 0, cy = 0, cz = 0;
+			for (Entity e : members) {
+				cx += e.getX(); cy += e.getY(); cz += e.getZ();
+				if (SelectionState.selected.contains(e.getUUID())) anySelected = true;
+			}
+			cx /= members.size(); cy /= members.size(); cz /= members.size();
+			double maxR = 0;
+			for (Entity e : members) {
+				double dx = e.getX() - cx, dz = e.getZ() - cz;
+				double d = Math.hypot(dx, dz);
+				if (d > maxR) maxR = d;
+			}
+			float radius = (float) Math.max(maxR + 0.7, RING_RADIUS);
+			int rgb = anySelected ? 0xFFFFFF : 0x888888;
 			int r = (rgb >> 16) & 0xFF;
 			int g = (rgb >> 8)  & 0xFF;
 			int b =  rgb        & 0xFF;
-			int a = selected ? 255 : 120;
+			int a = anySelected ? 255 : 110;
 
-			double ex = e.getX() - cam.x;
-			double ey = e.getY() + 0.02 - cam.y;
-			double ez = e.getZ() - cam.z;
+			drawRing(matrices, buffer,
+					cx - cam.x, cy + 0.02 - cam.y, cz - cam.z,
+					radius, r, g, b, a);
 
-			drawRing(matrices, buffer, ex, ey, ez, RING_RADIUS, r, g, b, a);
-
-			Vec3 target = Civcraft.MOVE_TARGETS.get(e.getUUID());
-			if (selected && target != null) {
-				sumX += e.getX();
-				sumZ += e.getZ();
-				sumTx += target.x;
-				sumTy += target.y;
-				sumTz += target.z;
-				movingCount++;
+			if (anySelected) {
+				for (Entity e : members) {
+					Vec3 target = Civcraft.MOVE_TARGETS.get(e.getUUID());
+					if (target == null) continue;
+					sumX += e.getX();
+					sumZ += e.getZ();
+					sumTx += target.x;
+					sumTy += target.y;
+					sumTz += target.z;
+					movingCount++;
+				}
 			}
 		}
 
