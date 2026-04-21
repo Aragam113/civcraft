@@ -5,8 +5,14 @@
 			"vertex_shader":   "minecraft:core/screenquad",
 			"fragment_shader": "civcraft:post/civcraft_lens",
 			"inputs": [
-				{ "sampler_name": "In",        "target":  "minecraft:main" },
-				{ "sampler_name": "Territory", "texture": "civcraft:territory_mask" }
+				{ "sampler_name": "In", "target": "minecraft:main" },
+				{
+					"sampler_name": "Territory",
+					"location": "civcraft:territory_mask",
+					"width":  256,
+					"height": 256,
+					"bilinear": true
+				}
 			],
 			"output": "swap"
 		},
