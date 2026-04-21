@@ -47,21 +47,19 @@ public final class OverlayRenderer {
 		if (consumers == null) return;
 		VertexConsumer buffer = consumers.getBuffer(RenderTypes.LINES);
 
-		// Pass 1: group members by squad id, draw ONE ring per squad around
-		// the entire cluster. Individual entities with sid=0 (legacy/solo)
-		// get their own tiny ring.
+		// Gather squad clusters once — reused for both ring pass and trajectory.
 		java.util.Map<Integer, java.util.List<Entity>> squads = new java.util.HashMap<>();
 		for (Entity e : level.entitiesForRendering()) {
 			if (!CivcraftClient.isSquadMember(e)) continue;
 			int sid = CivcraftClient.squadId(e);
-			if (sid == 0) sid = -Math.abs(e.getUUID().hashCode());  // unique bucket per loose unit
+			if (sid == 0) sid = -Math.abs(e.getUUID().hashCode());
 			squads.computeIfAbsent(sid, k -> new java.util.ArrayList<>()).add(e);
 		}
 
-		double sumX = 0, sumZ = 0;
-		double sumTx = 0, sumTy = 0, sumTz = 0;
+		record RingSpec(double cx, double cy, double cz, float radius, int r, int g, int b, int a) {}
+		java.util.List<RingSpec> ringSpecs = new java.util.ArrayList<>();
+		double sumX = 0, sumZ = 0, sumTx = 0, sumTy = 0, sumTz = 0;
 		int movingCount = 0;
-
 		for (java.util.List<Entity> members : squads.values()) {
 			boolean anySelected = false;
 			double cx = 0, cy = 0, cz = 0;
@@ -78,15 +76,9 @@ public final class OverlayRenderer {
 			}
 			float radius = (float) Math.max(maxR + 0.7, RING_RADIUS);
 			int rgb = anySelected ? 0xFFFFFF : 0x888888;
-			int r = (rgb >> 16) & 0xFF;
-			int g = (rgb >> 8)  & 0xFF;
-			int b =  rgb        & 0xFF;
-			int a = anySelected ? 255 : 110;
-
-			drawRing(matrices, buffer,
-					cx - cam.x, cy + 0.02 - cam.y, cz - cam.z,
-					radius, r, g, b, a);
-
+			ringSpecs.add(new RingSpec(cx, cy, cz, radius,
+					(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF,
+					anySelected ? 240 : 120));
 			if (anySelected) {
 				for (Entity e : members) {
 					Vec3 target = Civcraft.MOVE_TARGETS.get(e.getUUID());
@@ -101,40 +93,29 @@ public final class OverlayRenderer {
 			}
 		}
 
-		// Pass 2: one aggregate trajectory line + target marker for the squad.
-		if (movingCount > 0) {
-			double avgX = sumX / movingCount;
-			double avgZ = sumZ / movingCount;
-			double avgTx = sumTx / movingCount;
-			double avgTy = sumTy / movingCount;
-			double avgTz = sumTz / movingCount;
+		// LINES phase: only ghost gizmos (arrows + check/cross) — rings and
+		// trajectories switch to filled-box so they can have real thickness.
+		drawGhostLines(matrices, buffer, cam);
 
-			// Origin Y: sample the ground under the average current position.
+		// Filled pass: 1/3-block-thick squad rings + parabolic arc trajectory.
+		VertexConsumer filled = consumers.getBuffer(RenderTypes.debugFilledBox());
+		for (RingSpec s : ringSpecs) {
+			drawRingThick(matrices, filled,
+					s.cx() - cam.x, s.cy() + 0.02 - cam.y, s.cz() - cam.z,
+					s.radius(), 0.33f,
+					s.r(), s.g(), s.b(), s.a());
+		}
+		if (movingCount > 0) {
+			double avgX  = sumX  / movingCount, avgZ  = sumZ  / movingCount;
+			double avgTx = sumTx / movingCount, avgTy = sumTy / movingCount, avgTz = sumTz / movingCount;
 			int origY = level.getHeight(
 					net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE,
 					(int) Math.floor(avgX), (int) Math.floor(avgZ));
-
-			double lx0 = avgX - cam.x;
-			double ly0 = origY + 0.15 - cam.y;
-			double lz0 = avgZ - cam.z;
-			double lx1 = avgTx - cam.x;
-			double ly1 = avgTy + 0.15 - cam.y;
-			double lz1 = avgTz - cam.z;
-
-			// Thick yellow core + a darker outer layer for depth.
-			drawLine(matrices, buffer, lx0, ly0, lz0, lx1, ly1, lz1, 255, 215, 0, 255);
-			drawLine(matrices, buffer, lx0, ly0 + 0.02, lz0, lx1, ly1 + 0.02, lz1, 120, 80, 0, 180);
-
-			// Target marker — double ring (white over gold).
-			drawRing(matrices, buffer, lx1, ly1, lz1, 0.9f, 255, 215, 0, 255);
-			drawRing(matrices, buffer, lx1, ly1 + 0.05, lz1, 0.5f, 255, 255, 255, 255);
+			drawArcTrajectory(matrices, filled, cam, avgX, origY + 0.2, avgZ, avgTx, avgTy + 0.2, avgTz);
 		}
 
-		// Ghost building outline (wireframe + gizmos — still LINES phase).
-		drawGhostLines(matrices, buffer, cam);
-
-		// Switching render types invalidates the previous buffer, so real-block
-		// ghost preview goes AFTER all LINES drawing is complete.
+		// Ghost building preview uses its own render-type wrap (invalidates
+		// the buffers above; do it last).
 		if (com.civcraft.client.building.GhostState.isActive()) {
 			drawGhostBlocks(ctx, mc, cam);
 		}
@@ -353,6 +334,83 @@ public final class OverlayRenderer {
 		if (ctx.consumers() instanceof net.minecraft.client.renderer.MultiBufferSource.BufferSource bs) {
 			bs.endBatch();
 		}
+	}
+
+	/** Filled annulus of given outer radius and band thickness, lying flat on XZ. */
+	private static void drawRingThick(PoseStack m, VertexConsumer buf,
+	                                  double cx, double cy, double cz,
+	                                  double radius, double thickness,
+	                                  int r, int g, int b, int a) {
+		double inner = Math.max(0, radius - thickness / 2);
+		double outer = radius + thickness / 2;
+		int segs = RING_SEGMENTS * 2;  // smoother curve for thick band
+		PoseStack.Pose pose = m.last();
+		for (int i = 0; i < segs; i++) {
+			double a1 = Math.PI * 2 * i / segs;
+			double a2 = Math.PI * 2 * (i + 1) / segs;
+			double c1 = Math.cos(a1), s1 = Math.sin(a1);
+			double c2 = Math.cos(a2), s2 = Math.sin(a2);
+			float y = (float) cy;
+			buf.addVertex(pose, (float)(cx + inner * c1), y, (float)(cz + inner * s1)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + outer * c1), y, (float)(cz + outer * s1)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + outer * c2), y, (float)(cz + outer * s2)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + inner * c2), y, (float)(cz + inner * s2)).setColor(r, g, b, a);
+		}
+	}
+
+	/** Parabolic arc of white cubes from (x0,y0,z0) to (x1,y1,z1) with a
+	 *  chunky arrowhead block at the destination. */
+	private static void drawArcTrajectory(PoseStack m, VertexConsumer buf, Vec3 cam,
+	                                      double x0, double y0, double z0,
+	                                      double x1, double y1, double z1) {
+		double dist = Math.hypot(x1 - x0, z1 - z0);
+		double arcHeight = Math.max(2.5, dist * 0.35);
+		int steps = 24;
+		for (int i = 0; i <= steps; i++) {
+			double t = i / (double) steps;
+			double x = x0 + (x1 - x0) * t;
+			double z = z0 + (z1 - z0) * t;
+			double yBase = y0 + (y1 - y0) * t;
+			double y = yBase + 4 * arcHeight * t * (1 - t);
+			double half = (0.30 + 0.35 * t) * 0.5;  // thicker near the target
+			drawFilledCube(m, buf,
+					x - cam.x - half, y - cam.y - half, z - cam.z - half,
+					x - cam.x + half, y - cam.y + half, z - cam.z + half,
+					245, 245, 245, 235);
+		}
+		// Arrowhead: a 1-block cube elevated at the destination, sitting on top
+		// of the arc's last sample.
+		double ah = 0.55;
+		double atY = y1 + 0.9;
+		drawFilledCube(m, buf,
+				x1 - cam.x - ah, atY - cam.y,          z1 - cam.z - ah,
+				x1 - cam.x + ah, atY - cam.y + ah * 2, z1 - cam.z + ah,
+				255, 255, 255, 255);
+	}
+
+	private static void drawFilledCube(PoseStack m, VertexConsumer buf,
+	                                   double x0, double y0, double z0,
+	                                   double x1, double y1, double z1,
+	                                   int r, int g, int b, int a) {
+		PoseStack.Pose p = m.last();
+		addQuad(p, buf, x0, y0, z0, x0, y0, z1, x1, y0, z1, x1, y0, z0, r, g, b, a);
+		addQuad(p, buf, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, r, g, b, a);
+		addQuad(p, buf, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, r, g, b, a);
+		addQuad(p, buf, x0, y0, z1, x0, y1, z1, x1, y1, z1, x1, y0, z1, r, g, b, a);
+		addQuad(p, buf, x0, y0, z0, x0, y1, z0, x0, y1, z1, x0, y0, z1, r, g, b, a);
+		addQuad(p, buf, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, r, g, b, a);
+	}
+
+	private static void addQuad(PoseStack.Pose p, VertexConsumer buf,
+	                            double ax, double ay, double az,
+	                            double bx, double by, double bz,
+	                            double cx, double cy, double cz,
+	                            double dx, double dy, double dz,
+	                            int r, int g, int b, int a) {
+		buf.addVertex(p, (float) ax, (float) ay, (float) az).setColor(r, g, b, a);
+		buf.addVertex(p, (float) bx, (float) by, (float) bz).setColor(r, g, b, a);
+		buf.addVertex(p, (float) cx, (float) cy, (float) cz).setColor(r, g, b, a);
+		buf.addVertex(p, (float) dx, (float) dy, (float) dz).setColor(r, g, b, a);
 	}
 
 	private static void drawRing(PoseStack matrices, VertexConsumer buffer,
