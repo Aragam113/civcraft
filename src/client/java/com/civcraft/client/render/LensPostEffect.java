@@ -92,7 +92,17 @@ public final class LensPostEffect {
 		}
 	}
 
+	/** Diagnostic: true ⇒ paint whole mask white so we can verify sampler
+	 *  binding. If the screen stays fully colored, binding is good. */
+	private static final boolean DIAG_ALL_OWNED = true;
+
 	private static void fillMask(Minecraft mc, LensState.Mode mode) {
+		if (DIAG_ALL_OWNED) {
+			for (int y = 0; y < MASK_H; y++)
+				for (int x = 0; x < MASK_W; x++)
+					maskImage.setPixelABGR(x, y, 0xFFFFFFFF);
+			return;
+		}
 		int radius = mode.radius();
 		int rSq = radius * radius;
 		List<BlockPos> halls = nearbyHalls(mc);
