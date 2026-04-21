@@ -85,7 +85,7 @@ public class Civcraft implements ModInitializer {
 	private static final double LUMBERJACK_STEP = 0.08;
 	private static final int LUMBERJACK_SEARCH_RADIUS = 48;
 	private static final int CHOP_DURATION_TICKS = 40;
-	private static final int WOOD_PER_CHOP = 5;
+	private static final int PRODUCTION_PER_CHOP = 5;
 
 	@Override
 	public void onInitialize() {
@@ -241,7 +241,8 @@ public class Civcraft implements ModInitializer {
 	private static void handlePlayerJoin(ServerPlayer player) {
 		ServerLevel level = player.level() instanceof ServerLevel sl ? sl : null;
 		if (level == null) return;
-		int[] starting = {50, 100, 50, 0, 0, 0};
+		// Civ-style starting kit: food, production, gold, science, culture.
+		int[] starting = {30, 40, 10, 0, 0};
 		PLAYER_RESOURCES.put(player.getUUID(), starting);
 		sendResources(player, starting);
 
@@ -260,7 +261,7 @@ public class Civcraft implements ModInitializer {
 
 	private static void sendResources(ServerPlayer player, int[] r) {
 		ServerPlayNetworking.send(player,
-				new ResourceSyncPayload(r[0], r[1], r[2], r[3], r[4], r[5]));
+				new ResourceSyncPayload(r[0], r[1], r[2], r[3], r[4]));
 	}
 
 	private static void handleSpawnGhost(ServerPlayer player, SpawnGhostPayload p) {
@@ -312,34 +313,35 @@ public class Civcraft implements ModInitializer {
 			sendGhostCleared(player);
 			player.displayClientMessage(Component.literal("§6Ратуша заложена."), true);
 		} else {
-			// Builder ghost — instant build on confirm. Sawmill free; smithy
-			// costs wood+stone. Consumes one builder charge.
-			int[] res = PLAYER_RESOURCES.computeIfAbsent(player.getUUID(), u -> new int[]{50, 100, 50, 0, 0, 0});
-			if (g.kind == SpawnGhostPayload.KIND_SMITHY) {
-				int woodCost  = 60;
-				int stoneCost = 40;
-				if (res[1] < woodCost || res[2] < stoneCost) {
-					player.displayClientMessage(Component.literal(String.format(
-							"§cНе хватает ресурсов для кузницы (нужно: %d дерева, %d камня)",
-							woodCost, stoneCost)), true);
-					return;  // keep ghost active — user can cancel or get resources
-				}
-				res[1] -= woodCost;
-				res[2] -= stoneCost;
-				sendResources(player, res);
+			// Builder ghost — instant build on confirm, Civ-style costs
+			// (production / gold). Consumes one builder charge.
+			int[] res = PLAYER_RESOURCES.computeIfAbsent(player.getUUID(), u -> new int[]{30, 40, 10, 0, 0});
+			int needProd = 0, needGold = 0;
+			String name;
+			switch (g.kind) {
+				case SpawnGhostPayload.KIND_SMITHY     -> { needProd = 50; needGold = 10; name = "Кузница"; }
+				case SpawnGhostPayload.KIND_SAWMILL    -> { needProd = 30; name = "Лесопилка"; }
+				case SpawnGhostPayload.KIND_STOREHOUSE -> { needProd = 20; name = "Склад"; }
+				case SpawnGhostPayload.KIND_QUARRY     -> { needProd = 30; name = "Каменоломня"; }
+				default -> name = "Здание";
 			}
+			if (res[1] < needProd || res[2] < needGold) {
+				player.displayClientMessage(Component.literal(String.format(
+						"§cНе хватает ресурсов (нужно: %d производства, %d золота)",
+						needProd, needGold)), true);
+				return;
+			}
+			res[1] -= needProd;
+			res[2] -= needGold;
+			sendResources(player, res);
 			completeBuilding(level, g);
-			// Consume first living builder in the squad.
 			for (UUID u : g.units) {
 				Entity b = level.getEntity(u);
 				if (b != null) { b.discard(); MOVE_TARGETS.remove(u); break; }
 			}
 			PENDING_GHOSTS.remove(player.getUUID());
 			sendGhostCleared(player);
-			player.displayClientMessage(Component.literal(
-					g.kind == SpawnGhostPayload.KIND_SAWMILL
-							? "§6Лесопилка построена."
-							: "§6Кузница построена."), true);
+			player.displayClientMessage(Component.literal("§6" + name + " построена."), true);
 		}
 	}
 
@@ -445,14 +447,38 @@ public class Civcraft implements ModInitializer {
 	}
 
 	private static void completeBuilding(ServerLevel level, GhostBuilding g) {
-		if (g.kind == SpawnGhostPayload.KIND_SMITHY) {
-			buildSmithy(level, g.pos);
-		} else if (g.kind == SpawnGhostPayload.KIND_SAWMILL) {
-			buildSawmill(level, g.pos);
-			for (int i = 0; i < 2; i++) {
-				var lj = com.civcraft.item.SettlerCharterItem.spawnLumberjackAt(
-						level, g.pos.offset(i - 1, 1, 2));
-				if (lj != null) LUMBERJACKS.put(lj.getUUID(), new LumberjackJob(g.pos, g.owner));
+		switch (g.kind) {
+			case SpawnGhostPayload.KIND_SMITHY -> buildSmithy(level, g.pos);
+			case SpawnGhostPayload.KIND_SAWMILL -> {
+				buildSawmill(level, g.pos);
+				for (int i = 0; i < 2; i++) {
+					var lj = com.civcraft.item.SettlerCharterItem.spawnLumberjackAt(
+							level, g.pos.offset(i - 1, 1, 2));
+					if (lj != null) LUMBERJACKS.put(lj.getUUID(), new LumberjackJob(g.pos, g.owner));
+				}
+			}
+			case SpawnGhostPayload.KIND_STOREHOUSE -> buildStorehouse(level, g.pos);
+			case SpawnGhostPayload.KIND_QUARRY     -> buildQuarry(level, g.pos);
+		}
+	}
+
+	private static void buildStorehouse(ServerLevel level, BlockPos base) {
+		if (placeFromTemplate(level, base, "storehouse")) return;
+		var wood = ModBlocks.STOREHOUSE.defaultBlockState();
+		for (int x = -1; x <= 1; x++) {
+			for (int z = -1; z <= 1; z++) {
+				level.setBlockAndUpdate(base.offset(x, 0, z), wood);
+				if (!(x == 0 && z == 0)) level.setBlockAndUpdate(base.offset(x, 1, z), wood);
+			}
+		}
+	}
+
+	private static void buildQuarry(ServerLevel level, BlockPos base) {
+		if (placeFromTemplate(level, base, "quarry")) return;
+		var stone = ModBlocks.QUARRY.defaultBlockState();
+		for (int x = -1; x <= 1; x++) {
+			for (int z = -1; z <= 1; z++) {
+				level.setBlockAndUpdate(base.offset(x, 0, z), stone);
 			}
 		}
 	}
@@ -534,7 +560,7 @@ public class Civcraft implements ModInitializer {
 			case DEPOSIT -> {
 				int[] r = PLAYER_RESOURCES.get(job.owner);
 				if (r != null) {
-					r[1] += WOOD_PER_CHOP;
+					r[1] += PRODUCTION_PER_CHOP;  // Civ-style: chopping yields production
 					ServerPlayer owner = server.getPlayerList().getPlayer(job.owner);
 					if (owner != null) sendResources(owner, r);
 				}

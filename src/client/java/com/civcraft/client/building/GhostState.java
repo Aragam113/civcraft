@@ -35,6 +35,8 @@ public final class GhostState {
 			case 0 -> new int[]{-2, 2, 0, 5, -2, 2};   // townhall with spire
 			case 1 -> new int[]{-1, 1, 0, 0, -1, 1};   // smithy 3x1x3
 			case 2 -> new int[]{-1, 1, 0, 1, -1, 1};   // sawmill 3x2x3
+			case 3 -> new int[]{-1, 1, 0, 1, -1, 1};   // storehouse 3x2x3
+			case 4 -> new int[]{-1, 1, 0, 0, -1, 1};   // quarry 3x1x3
 			default -> new int[]{0, 0, 0, 0, 0, 0};
 		};
 	}
@@ -87,6 +89,24 @@ public final class GhostState {
 				list.add(new GhostBlock( 1, 1, -1, log));
 				list.add(new GhostBlock(-1, 1,  1, log));
 				list.add(new GhostBlock( 1, 1,  1, log));
+			}
+			case 3 -> {
+				BlockState storehouse = ModBlocks.STOREHOUSE.defaultBlockState();
+				for (int x = -1; x <= 1; x++) {
+					for (int z = -1; z <= 1; z++) {
+						list.add(new GhostBlock(x, 0, z, storehouse));
+						if (x == 0 && z == 0) continue;
+						list.add(new GhostBlock(x, 1, z, storehouse));
+					}
+				}
+			}
+			case 4 -> {
+				BlockState quarry = ModBlocks.QUARRY.defaultBlockState();
+				for (int x = -1; x <= 1; x++) {
+					for (int z = -1; z <= 1; z++) {
+						list.add(new GhostBlock(x, 0, z, quarry));
+					}
+				}
 			}
 		}
 		return list;

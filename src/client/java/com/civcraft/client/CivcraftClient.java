@@ -53,12 +53,11 @@ public class CivcraftClient implements ClientModInitializer {
 
 		ClientPlayNetworking.registerGlobalReceiver(
 				com.civcraft.network.ResourceSyncPayload.ID, (payload, context) -> {
-					com.civcraft.client.resource.ResourceState.food  = payload.food();
-					com.civcraft.client.resource.ResourceState.wood  = payload.wood();
-					com.civcraft.client.resource.ResourceState.stone = payload.stone();
-					com.civcraft.client.resource.ResourceState.coal  = payload.coal();
-					com.civcraft.client.resource.ResourceState.iron  = payload.iron();
-					com.civcraft.client.resource.ResourceState.gold  = payload.gold();
+					com.civcraft.client.resource.ResourceState.food       = payload.food();
+					com.civcraft.client.resource.ResourceState.production = payload.production();
+					com.civcraft.client.resource.ResourceState.gold       = payload.gold();
+					com.civcraft.client.resource.ResourceState.science    = payload.science();
+					com.civcraft.client.resource.ResourceState.culture    = payload.culture();
 				});
 
 		ClientPlayNetworking.registerGlobalReceiver(
@@ -171,9 +170,13 @@ public class CivcraftClient implements ClientModInitializer {
 			return;  // already have a ghost; user must confirm/cancel first
 		}
 		if (SelectionState.kind == SelectionState.Kind.BUILDER_SQUAD) {
-			byte kind = slot == 1
-					? com.civcraft.network.SpawnGhostPayload.KIND_SAWMILL
-					: com.civcraft.network.SpawnGhostPayload.KIND_SMITHY;
+			byte kind = switch (slot) {
+				case 0  -> com.civcraft.network.SpawnGhostPayload.KIND_SMITHY;
+				case 1  -> com.civcraft.network.SpawnGhostPayload.KIND_SAWMILL;
+				case 2  -> com.civcraft.network.SpawnGhostPayload.KIND_STOREHOUSE;
+				case 3  -> com.civcraft.network.SpawnGhostPayload.KIND_QUARRY;
+				default -> com.civcraft.network.SpawnGhostPayload.KIND_SMITHY;
+			};
 			if (SelectionState.selected.isEmpty()) {
 				if (client.player != null) {
 					client.player.displayClientMessage(
@@ -189,10 +192,9 @@ public class CivcraftClient implements ClientModInitializer {
 				if (!com.civcraft.client.resource.ResourceState.canAffordTownHall()) {
 					if (client.player != null) {
 						client.player.displayClientMessage(Component.literal(
-								String.format("§cНе хватает ресурсов для ратуши (нужно: %d еды, %d дерева, %d камня)",
+								String.format("§cНе хватает ресурсов для ратуши (нужно: %d еды, %d производства)",
 										com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD,
-										com.civcraft.client.resource.ResourceState.TOWN_HALL_WOOD,
-										com.civcraft.client.resource.ResourceState.TOWN_HALL_STONE)), true);
+										com.civcraft.client.resource.ResourceState.TOWN_HALL_PRODUCTION)), true);
 					}
 					return;
 				}
@@ -374,9 +376,8 @@ public class CivcraftClient implements ClientModInitializer {
 				new com.civcraft.network.CancelGhostPayload());
 		if (com.civcraft.client.building.GhostState.kind
 				== com.civcraft.network.SpawnGhostPayload.KIND_TOWNHALL) {
-			com.civcraft.client.resource.ResourceState.food  += com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD;
-			com.civcraft.client.resource.ResourceState.wood  += com.civcraft.client.resource.ResourceState.TOWN_HALL_WOOD;
-			com.civcraft.client.resource.ResourceState.stone += com.civcraft.client.resource.ResourceState.TOWN_HALL_STONE;
+			com.civcraft.client.resource.ResourceState.food       += com.civcraft.client.resource.ResourceState.TOWN_HALL_FOOD;
+			com.civcraft.client.resource.ResourceState.production += com.civcraft.client.resource.ResourceState.TOWN_HALL_PRODUCTION;
 		}
 	}
 

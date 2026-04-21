@@ -31,6 +31,16 @@ public final class ModBlocks {
 			Block::new,
 			BlockBehaviour.Properties.of().mapColor(MapColor.WOOD).strength(3.0f, 4.0f)
 	);
+	public static final Block STOREHOUSE = register(
+			"storehouse",
+			Block::new,
+			BlockBehaviour.Properties.of().mapColor(MapColor.WOOD).strength(3.0f, 4.0f)
+	);
+	public static final Block QUARRY = register(
+			"quarry",
+			Block::new,
+			BlockBehaviour.Properties.of().mapColor(MapColor.STONE).strength(4.0f, 6.0f)
+	);
 
 	private ModBlocks() {}
 

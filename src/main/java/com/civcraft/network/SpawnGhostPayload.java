@@ -19,9 +19,11 @@ import java.util.UUID;
  */
 public record SpawnGhostPayload(byte kind, int x, int y, int z, List<UUID> units)
 		implements CustomPacketPayload {
-	public static final byte KIND_TOWNHALL = 0;
-	public static final byte KIND_SMITHY   = 1;
-	public static final byte KIND_SAWMILL  = 2;
+	public static final byte KIND_TOWNHALL   = 0;
+	public static final byte KIND_SMITHY     = 1;
+	public static final byte KIND_SAWMILL    = 2;
+	public static final byte KIND_STOREHOUSE = 3;
+	public static final byte KIND_QUARRY     = 4;
 
 	public static final CustomPacketPayload.Type<SpawnGhostPayload> ID = new CustomPacketPayload.Type<>(
 			Identifier.fromNamespaceAndPath(Civcraft.MOD_ID, "spawn_ghost"));

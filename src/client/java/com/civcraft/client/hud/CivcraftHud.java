@@ -15,17 +15,18 @@ import net.minecraft.world.level.levelgen.Heightmap;
 public final class CivcraftHud {
 	private static final Identifier CURSOR        = tex("textures/gui/cursor.png");
 	private static final Identifier PLANET_SHEET  = tex("textures/gui/planet.png");
-	private static final Identifier ICON_FOUND    = tex("textures/gui/icon_town_hall.png");
-	private static final Identifier ICON_SPAWN    = tex("textures/gui/icon_spawn_settlers.png");
-	private static final Identifier ICON_SMITHY   = tex("textures/gui/icon_smithy.png");
-	private static final Identifier ICON_SAWMILL  = tex("textures/gui/icon_sawmill.png");
+	private static final Identifier ICON_FOUND      = tex("textures/gui/icon_town_hall.png");
+	private static final Identifier ICON_SPAWN      = tex("textures/gui/icon_spawn_settlers.png");
+	private static final Identifier ICON_SMITHY     = tex("textures/gui/icon_smithy.png");
+	private static final Identifier ICON_SAWMILL    = tex("textures/gui/icon_sawmill.png");
+	private static final Identifier ICON_STOREHOUSE = tex("textures/gui/icon_storehouse.png");
+	private static final Identifier ICON_QUARRY     = tex("textures/gui/icon_quarry.png");
 
-	private static final Identifier RES_FOOD  = tex("textures/gui/res_food.png");
-	private static final Identifier RES_WOOD  = tex("textures/gui/res_wood.png");
-	private static final Identifier RES_STONE = tex("textures/gui/res_stone.png");
-	private static final Identifier RES_COAL  = tex("textures/gui/res_coal.png");
-	private static final Identifier RES_IRON  = tex("textures/gui/res_iron.png");
-	private static final Identifier RES_GOLD  = tex("textures/gui/res_gold.png");
+	private static final Identifier RES_FOOD       = tex("textures/gui/res_food.png");
+	private static final Identifier RES_PRODUCTION = tex("textures/gui/res_production.png");
+	private static final Identifier RES_GOLD       = tex("textures/gui/res_gold.png");
+	private static final Identifier RES_SCIENCE    = tex("textures/gui/res_science.png");
+	private static final Identifier RES_CULTURE    = tex("textures/gui/res_culture.png");
 
 	private static final int CURSOR_SIZE = 32;
 	private static final int PLANET_SIZE = 40;          // small corner button now
@@ -110,10 +111,10 @@ public final class CivcraftHud {
 
 	private static void drawResourceBar(GuiGraphics g, Minecraft mc) {
 		int sw = hudWidth(mc);
-		Identifier[] icons = { RES_FOOD, RES_WOOD, RES_STONE, RES_COAL, RES_IRON, RES_GOLD };
+		Identifier[] icons = { RES_FOOD, RES_PRODUCTION, RES_GOLD, RES_SCIENCE, RES_CULTURE };
 		int[] values = {
-				ResourceState.food, ResourceState.wood, ResourceState.stone,
-				ResourceState.coal, ResourceState.iron, ResourceState.gold,
+				ResourceState.food, ResourceState.production, ResourceState.gold,
+				ResourceState.science, ResourceState.culture,
 		};
 		int iconSize = 18;
 		int slotW = 72;
@@ -333,8 +334,13 @@ public final class CivcraftHud {
 		switch (SelectionState.kind) {
 			case SQUAD         -> out[0] = ICON_FOUND;
 			case BUILDING      -> out[0] = ICON_SPAWN;
-			case BUILDER_SQUAD -> { out[0] = ICON_SMITHY; out[1] = ICON_SAWMILL; }
-			default            -> { return null; }
+			case BUILDER_SQUAD -> {
+				out[0] = ICON_SMITHY;
+				out[1] = ICON_SAWMILL;
+				out[2] = ICON_STOREHOUSE;
+				out[3] = ICON_QUARRY;
+			}
+			default -> { return null; }
 		}
 		return out;
 	}
