@@ -96,27 +96,45 @@ public final class LensPostEffect {
 		int radius = mode.radius();
 		int rSq = radius * radius;
 		List<BlockPos> halls = nearbyHalls(mc);
-		int fbW = mc.getWindow().getWidth();
-		int fbH = mc.getWindow().getHeight();
-		double anchorY = TopDownMode.anchorY;
+
+		// Simple orthographic approximation for a top-down camera: the visible
+		// ground-plane footprint spans roughly (distance * 1.6) blocks wide
+		// and (distance * 0.9) deep. This is good enough for a mask — we
+		// don't need millimetre accuracy, and unlike the perspective-ray
+		// method it never returns null for edge-of-screen pixels (which
+		// is what was producing the chess-pattern artefact).
+		double dist    = TopDownMode.distance;
+		double spanX   = dist * 1.60;  // half-width in world blocks
+		double spanZ   = dist * 0.90;  // half-depth in world blocks (pitched perspective squash)
+		double yawRad  = Math.toRadians(TopDownMode.yaw);
+		double cosY    = Math.cos(yawRad);
+		double sinY    = Math.sin(yawRad);
+		double anchorX = TopDownMode.anchorX;
+		double anchorZ = TopDownMode.anchorZ;
 
 		for (int py = 0; py < MASK_H; py++) {
+			// py=0 is the mask's TOP (screen-top in our conventions).
+			// UV-space: screen TOP  → texture v=1 → NativeImage row 0 (uploaded top-down but sampled bottom-up).
+			// Easiest: compute everything in screen-space then flip the Y
+			// when storing into the NativeImage row so the GL sampler sees
+			// the right thing.
+			double ndcY = 1.0 - (py + 0.5) / (double) MASK_H * 2.0; // +1 top, -1 bottom
+			double localZ = -ndcY * spanZ;   // screen UP = world NORTH = -Z
 			for (int px = 0; px < MASK_W; px++) {
-				// The vanilla screenquad vertex shader emits UV (0..1) across
-				// the visible window; sampler coordinate (u, v) with v=0 at
-				// the BOTTOM maps to NativeImage row (MASK_H - 1) — so we
-				// write with an inverted row index to cancel the Y-flip.
-				double fbX = (px + 0.5) * fbW / (double) MASK_W;
-				double fbY = (py + 0.5) * fbH / (double) MASK_H;
-				Vec3 ground = CameraMath.cursorToGround(mc, fbX, fbY, anchorY);
+				double ndcX = (px + 0.5) / (double) MASK_W * 2.0 - 1.0; // -1 left, +1 right
+				double localX = ndcX * spanX;
+
+				// Rotate the local (east, south) offset by yaw around Y.
+				double wx = anchorX + localX * cosY - localZ * sinY;
+				double wz = anchorZ + localX * sinY + localZ * cosY;
+
 				boolean owned = false;
-				if (ground != null) {
-					for (BlockPos h : halls) {
-						double dx = ground.x - h.getX();
-						double dz = ground.z - h.getZ();
-						if (dx * dx + dz * dz <= rSq) { owned = true; break; }
-					}
+				for (BlockPos h : halls) {
+					double dx = wx - h.getX();
+					double dz = wz - h.getZ();
+					if (dx * dx + dz * dz <= rSq) { owned = true; break; }
 				}
+
 				int v = owned ? 255 : 0;
 				int abgr = 0xFF000000 | (v << 16) | (v << 8) | v;
 				maskImage.setPixelABGR(px, MASK_H - 1 - py, abgr);
