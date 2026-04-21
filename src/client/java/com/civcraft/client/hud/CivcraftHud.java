@@ -78,11 +78,12 @@ public final class CivcraftHud {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.mouseHandler == null || mc.getWindow() == null) return;
 
-		// Draw HUD in "virtual" coordinates pinned to HUD_SCALE (=2). This keeps
-		// panels the same physical pixel size no matter what GUI scale the user
-		// picks — avoids the panel eating the screen at scale 4+.
+		// Draw HUD in "virtual" coordinates pinned to HUD_SCALE (=2). GuiGraphics
+		// already maps its logical coords through guiScale, so we multiply by the
+		// inverse ratio to counteract that and keep our panels at the same
+		// physical pixel size regardless of the user's GUI scale.
 		double guiScale = mc.getWindow().getGuiScale();
-		double factor = guiScale / HUD_SCALE;
+		double factor = HUD_SCALE / guiScale;
 		graphics.pose().pushMatrix();
 		graphics.pose().scale((float) factor, (float) factor);
 
