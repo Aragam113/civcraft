@@ -8,7 +8,9 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.core.BlockPos;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.levelgen.Heightmap;
 
 public final class CivcraftHud {
 	private static final Identifier CURSOR        = tex("textures/gui/cursor.png");
@@ -26,16 +28,26 @@ public final class CivcraftHud {
 	private static final Identifier RES_GOLD  = tex("textures/gui/res_gold.png");
 
 	private static final int CURSOR_SIZE = 32;
-	private static final int PLANET_SIZE = 64;          // rendered size (2× source)
-	private static final int PLANET_SRC  = 32;          // per-frame source size
+	private static final int PLANET_SIZE = 40;          // small corner button now
+	private static final int PLANET_SRC  = 32;
 	private static final int PLANET_FRAMES = 8;
 
-	private static final int ICON_SIZE = 32;
-	private static final int MARGIN    = 14;
-	private static final int PERK_GAP  = 12;
+	private static final int BOTTOM_BAR_H    = 104;
+	private static final int MINIMAP_W       = 160;
+	private static final int MINIMAP_H       = 80;
+	private static final int CMD_SLOT        = 34;
+	private static final int CMD_GAP         = 4;
+	private static final int CMD_COLS        = 3;
+	private static final int CMD_ROWS        = 3;
+	private static final int FRAME_PAD       = 6;
 
 	private static final long ANIM_DURATION_MS = 1500L;
 	private static long animStartMs = 0;
+
+	// Minimap cache — refreshed every N frames since per-block lookup is costly.
+	private static int[] minimapCache;
+	private static long minimapCacheStamp = 0;
+	private static double minimapCacheX = 0, minimapCacheZ = 0;
 
 	private static Identifier tex(String path) {
 		return Identifier.fromNamespaceAndPath(Civcraft.MOD_ID, path);
@@ -59,16 +71,19 @@ public final class CivcraftHud {
 		double scale = mc.getWindow().getGuiScale();
 
 		drawResourceBar(graphics, mc);
+		drawPlanetButton(graphics, mc);
+		drawBottomBar(graphics, mc);
 		drawSelectionRect(graphics, mc, scale);
-		drawPlanetAndPerks(graphics, mc, scale);
 		drawGhostButtons(graphics, mc);
 
-		// Draw the cursor last so it floats over everything.
+		// Cursor last, over everything.
 		int x = (int) (mc.mouseHandler.xpos() / scale);
 		int y = (int) (mc.mouseHandler.ypos() / scale);
 		graphics.blit(CURSOR, x, y, CURSOR_SIZE, CURSOR_SIZE,
 				0f, 0f, (float) CURSOR_SIZE, (float) CURSOR_SIZE);
 	}
+
+	// ─── Top bar ──────────────────────────────────────────────────────────────
 
 	private static void drawResourceBar(GuiGraphics g, Minecraft mc) {
 		int sw = mc.getWindow().getGuiScaledWidth();
@@ -84,11 +99,7 @@ public final class CivcraftHud {
 		int x0 = (sw - totalW) / 2;
 		int y0 = 6;
 
-		g.fill(x0 - 4, y0 - 4, x0 + totalW + 4, y0 + rowH, 0xCC120B04);
-		g.fill(x0 - 4, y0 - 4, x0 + totalW + 4, y0 - 3, 0xFFD4AF37);
-		g.fill(x0 - 4, y0 + rowH - 1, x0 + totalW + 4, y0 + rowH, 0xFFD4AF37);
-		g.fill(x0 - 4, y0 - 4, x0 - 3, y0 + rowH, 0xFFD4AF37);
-		g.fill(x0 + totalW + 3, y0 - 4, x0 + totalW + 4, y0 + rowH, 0xFFD4AF37);
+		drawPanel(g, x0 - 4, y0 - 4, x0 + totalW + 4, y0 + rowH);
 
 		for (int i = 0; i < icons.length; i++) {
 			int ix = x0 + i * slotW;
@@ -99,38 +110,13 @@ public final class CivcraftHud {
 		}
 	}
 
-	private static void drawSelectionRect(GuiGraphics g, Minecraft mc, double scale) {
-		if (!SelectionState.dragging) return;
-		int x0 = (int) (Math.min(SelectionState.startX, SelectionState.currentX) / scale);
-		int y0 = (int) (Math.min(SelectionState.startY, SelectionState.currentY) / scale);
-		int x1 = (int) (Math.max(SelectionState.startX, SelectionState.currentX) / scale);
-		int y1 = (int) (Math.max(SelectionState.startY, SelectionState.currentY) / scale);
-		if (x1 - x0 < 2 || y1 - y0 < 2) return;
-		// Translucent gold fill + solid gold frame — matches the planet/perk theme.
-		g.fill(x0, y0, x1, y1, 0x33D4AF37);
-		g.fill(x0, y0, x1, y0 + 1, 0xFFD4AF37);
-		g.fill(x0, y1 - 1, x1, y1, 0xFFD4AF37);
-		g.fill(x0, y0, x0 + 1, y1, 0xFFD4AF37);
-		g.fill(x1 - 1, y0, x1, y1, 0xFFD4AF37);
-	}
-
-	// --- layout ---------------------------------------------------------------
+	// ─── Planet (menu) button ─────────────────────────────────────────────────
 
 	public static int[] planetRect(Minecraft mc, double scale) {
 		int sw = mc.getWindow().getGuiScaledWidth();
-		int sh = mc.getWindow().getGuiScaledHeight();
-		int x0 = sw - MARGIN - PLANET_SIZE;
-		int y0 = sh - MARGIN - PLANET_SIZE;
+		int x0 = sw - 8 - PLANET_SIZE;
+		int y0 = 8;
 		return new int[]{x0, y0, x0 + PLANET_SIZE, y0 + PLANET_SIZE};
-	}
-
-	public static int[] perkRect(Minecraft mc, double scale, int slot) {
-		int[] p = planetRect(mc, scale);
-		// Perks expand to the LEFT of the planet, RTL order.
-		int x1 = p[0] - 16 - slot * (ICON_SIZE + PERK_GAP);
-		int x0 = x1 - ICON_SIZE;
-		int y0 = p[1] + (PLANET_SIZE - ICON_SIZE) / 2;
-		return new int[]{x0, y0, x0 + ICON_SIZE, y0 + ICON_SIZE};
 	}
 
 	public static boolean isMouseOverPlanet(Minecraft mc) {
@@ -139,26 +125,239 @@ public final class CivcraftHud {
 		return pointIn(mc, scale, r);
 	}
 
+	private static void drawPlanetButton(GuiGraphics g, Minecraft mc) {
+		int[] p = planetRect(mc, mc.getWindow().getGuiScale());
+		boolean hover = isMouseOverPlanet(mc);
+		int frame = 0;
+		long now = System.currentTimeMillis();
+		if (now - animStartMs < ANIM_DURATION_MS) {
+			frame = (int) ((now - animStartMs) / (float) ANIM_DURATION_MS * PLANET_FRAMES) % PLANET_FRAMES;
+		} else if (hover) {
+			frame = (int) ((now / 120) % PLANET_FRAMES);
+		}
+		drawPanel(g, p[0] - 3, p[1] - 3, p[2] + 3, p[3] + 3);
+		float u = frame * (float) PLANET_SRC;
+		g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
+				PLANET_SHEET, p[0], p[1], u, 0f,
+				PLANET_SIZE, PLANET_SIZE, PLANET_SRC, PLANET_SRC,
+				PLANET_SRC * PLANET_FRAMES, PLANET_SRC);
+	}
+
+	// ─── Bottom bar (3 zones) ─────────────────────────────────────────────────
+
+	private static void drawBottomBar(GuiGraphics g, Minecraft mc) {
+		int sw = mc.getWindow().getGuiScaledWidth();
+		int sh = mc.getWindow().getGuiScaledHeight();
+		int y0 = sh - BOTTOM_BAR_H;
+		// Base strip — dark panel with gold top border.
+		g.fill(0, y0, sw, sh, 0xEE0A0604);
+		g.fill(0, y0, sw, y0 + 2, 0xFFD4AF37);
+
+		int leftW = MINIMAP_W + FRAME_PAD * 4;
+		int cmdW  = CMD_COLS * (CMD_SLOT + CMD_GAP) + FRAME_PAD * 4;
+		int midX0 = leftW;
+		int midX1 = sw - cmdW;
+
+		int innerY0 = y0 + FRAME_PAD + 4;
+		int innerY1 = sh - FRAME_PAD;
+
+		// Left zone: minimap
+		drawPanel(g, FRAME_PAD, innerY0, leftW - FRAME_PAD, innerY1);
+		drawMinimap(g, mc,
+				FRAME_PAD + 4, innerY0 + 4,
+				FRAME_PAD + 4 + MINIMAP_W, innerY0 + 4 + MINIMAP_H);
+
+		// Middle zone: selection info
+		drawPanel(g, midX0, innerY0, midX1, innerY1);
+		drawSelectionInfo(g, mc, midX0 + 6, innerY0 + 6, midX1 - 6, innerY1 - 6);
+
+		// Right zone: command grid
+		drawPanel(g, midX1 + FRAME_PAD, innerY0, sw - FRAME_PAD, innerY1);
+		drawCommandGrid(g, mc);
+	}
+
+	// ─── Minimap ──────────────────────────────────────────────────────────────
+
+	private static void drawMinimap(GuiGraphics g, Minecraft mc, int x0, int y0, int x1, int y1) {
+		int w = x1 - x0, h = y1 - y0;
+		// Thin frame around the map area.
+		g.fill(x0 - 1, y0 - 1, x1 + 1, y0, 0xFFD4AF37);
+		g.fill(x0 - 1, y1, x1 + 1, y1 + 1, 0xFFD4AF37);
+		g.fill(x0 - 1, y0, x0, y1, 0xFFD4AF37);
+		g.fill(x1, y0, x1 + 1, y1, 0xFFD4AF37);
+
+		sampleMinimap(mc, w, h);
+		int[] cache = minimapCache;
+		if (cache != null) {
+			for (int py = 0; py < h; py++) {
+				for (int px = 0; px < w; px++) {
+					int color = cache[py * w + px];
+					g.fill(x0 + px, y0 + py, x0 + px + 1, y0 + py + 1, color);
+				}
+			}
+		} else {
+			g.fill(x0, y0, x1, y1, 0xFF1A1A1F);
+		}
+		// Player dot (camera anchor center).
+		int cx = x0 + w / 2, cy = y0 + h / 2;
+		g.fill(cx - 2, cy - 2, cx + 3, cy + 3, 0xFF1E1E1E);
+		g.fill(cx - 1, cy - 1, cx + 2, cy + 2, 0xFFFFD44D);
+	}
+
+	private static void sampleMinimap(Minecraft mc, int w, int h) {
+		if (mc.level == null) return;
+		long now = System.currentTimeMillis();
+		// Re-sample every 400 ms or if the camera moved far.
+		double dx = TopDownMode.anchorX - minimapCacheX;
+		double dz = TopDownMode.anchorZ - minimapCacheZ;
+		if (minimapCache != null && minimapCache.length == w * h
+				&& now - minimapCacheStamp < 400 && dx * dx + dz * dz < 9) return;
+		int blocksAcross = 96;   // world span shown on map
+		int[] cache = new int[w * h];
+		double originX = TopDownMode.anchorX - blocksAcross / 2.0;
+		double originZ = TopDownMode.anchorZ - blocksAcross / 2.0;
+		for (int py = 0; py < h; py++) {
+			for (int px = 0; px < w; px++) {
+				int wx = (int) (originX + (px + 0.5) * blocksAcross / w);
+				int wz = (int) (originZ + (py + 0.5) * blocksAcross / h);
+				int gy = mc.level.getHeight(Heightmap.Types.WORLD_SURFACE, wx, wz);
+				BlockPos sample = new BlockPos(wx, gy - 1, wz);
+				int col = 0xFF1F1A14;
+				try {
+					col = mc.level.getBlockState(sample).getMapColor(mc.level, sample).col | 0xFF000000;
+				} catch (Throwable ignored) {
+				}
+				cache[py * w + px] = col;
+			}
+		}
+		minimapCache = cache;
+		minimapCacheStamp = now;
+		minimapCacheX = TopDownMode.anchorX;
+		minimapCacheZ = TopDownMode.anchorZ;
+	}
+
+	// ─── Selection info ───────────────────────────────────────────────────────
+
+	private static void drawSelectionInfo(GuiGraphics g, Minecraft mc, int x0, int y0, int x1, int y1) {
+		String title, subtitle;
+		switch (SelectionState.kind) {
+			case SQUAD -> {
+				title = "⚔ Поселенцы";
+				subtitle = "Юнитов: §e" + SelectionState.selected.size() + "§r · §7Q — основать ратушу";
+			}
+			case BUILDER_SQUAD -> {
+				title = "⛏ Строители";
+				subtitle = "Юнитов: §e" + SelectionState.selected.size() + "§r · §7Q — кузница, E — лесопилка";
+			}
+			case BUILDING -> {
+				title = "Ратуша";
+				subtitle = "§7Q — призвать поселенцев";
+			}
+			default -> {
+				title = "§7Ничего не выделено";
+				subtitle = "§8ЛКМ рамкой по юнитам, ПКМ — приказ";
+			}
+		}
+		g.drawString(mc.font, title, x0 + 4, y0 + 6, 0xFFFFDA66, false);
+		g.drawString(mc.font, subtitle, x0 + 4, y0 + 20, 0xFFE0E0E0, false);
+	}
+
+	// ─── Command grid (3×3) ───────────────────────────────────────────────────
+
+	public static int[] perkRect(Minecraft mc, double scale, int slot) {
+		int sw = mc.getWindow().getGuiScaledWidth();
+		int sh = mc.getWindow().getGuiScaledHeight();
+		int cmdW = CMD_COLS * (CMD_SLOT + CMD_GAP);
+		int baseX = sw - FRAME_PAD - cmdW;
+		int baseY = sh - BOTTOM_BAR_H + FRAME_PAD + 8;
+		int col = slot % CMD_COLS;
+		int row = slot / CMD_COLS;
+		int x0 = baseX + col * (CMD_SLOT + CMD_GAP);
+		int y0 = baseY + row * (CMD_SLOT + CMD_GAP);
+		return new int[]{x0, y0, x0 + CMD_SLOT, y0 + CMD_SLOT};
+	}
+
 	public static boolean isMouseOverPerk(Minecraft mc) {
 		return mousePerkSlot(mc) >= 0;
 	}
 
+	public static int mousePerkSlot(Minecraft mc) {
+		Identifier[] slots = commandSlots();
+		if (slots == null) return -1;
+		double scale = mc.getWindow().getGuiScale();
+		for (int i = 0; i < slots.length; i++) {
+			if (slots[i] == null) continue;
+			if (pointIn(mc, scale, perkRect(mc, scale, i))) return i;
+		}
+		return -1;
+	}
+
+	/** Which icons occupy which slot in the 3×3 command grid, based on selection. */
+	private static Identifier[] commandSlots() {
+		Identifier[] out = new Identifier[CMD_COLS * CMD_ROWS];
+		switch (SelectionState.kind) {
+			case SQUAD         -> out[0] = ICON_FOUND;
+			case BUILDING      -> out[0] = ICON_SPAWN;
+			case BUILDER_SQUAD -> { out[0] = ICON_SMITHY; out[1] = ICON_SAWMILL; }
+			default            -> { return null; }
+		}
+		return out;
+	}
+
+	private static void drawCommandGrid(GuiGraphics g, Minecraft mc) {
+		int hover = mousePerkSlot(mc);
+		Identifier[] slots = commandSlots();
+		for (int i = 0; i < CMD_COLS * CMD_ROWS; i++) {
+			int[] r = perkRect(mc, 0, i);
+			drawCommandSlot(g, r, slots == null ? null : slots[i], hover == i);
+		}
+	}
+
+	private static void drawCommandSlot(GuiGraphics g, int[] r, Identifier icon, boolean hover) {
+		int bg     = icon == null ? 0xAA0E0905 : (hover ? 0xEE2A1F10 : 0xDD120B04);
+		int border = hover ? 0xFFFFDA66 : 0xFFD4AF37;
+		g.fill(r[0] - 1, r[1] - 1, r[2] + 1, r[3] + 1, border);
+		g.fill(r[0],     r[1],     r[2],     r[3],     bg);
+		if (icon != null) {
+			int inset = 2;
+			int size = CMD_SLOT - inset * 2;
+			g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
+					icon, r[0] + inset, r[1] + inset, 0f, 0f,
+					size, size, size, size, size, size);
+		}
+	}
+
+	// ─── Selection rectangle (drag) ───────────────────────────────────────────
+
+	private static void drawSelectionRect(GuiGraphics g, Minecraft mc, double scale) {
+		if (!SelectionState.dragging) return;
+		int x0 = (int) (Math.min(SelectionState.startX, SelectionState.currentX) / scale);
+		int y0 = (int) (Math.min(SelectionState.startY, SelectionState.currentY) / scale);
+		int x1 = (int) (Math.max(SelectionState.startX, SelectionState.currentX) / scale);
+		int y1 = (int) (Math.max(SelectionState.startY, SelectionState.currentY) / scale);
+		if (x1 - x0 < 2 || y1 - y0 < 2) return;
+		g.fill(x0, y0, x1, y1, 0x33D4AF37);
+		g.fill(x0, y0, x1, y0 + 1, 0xFFD4AF37);
+		g.fill(x0, y1 - 1, x1, y1, 0xFFD4AF37);
+		g.fill(x0, y0, x0 + 1, y1, 0xFFD4AF37);
+		g.fill(x1 - 1, y0, x1, y1, 0xFFD4AF37);
+	}
+
+	// ─── Ghost confirm/cancel buttons ─────────────────────────────────────────
+
 	private static final int GHOST_BTN_SIZE = 40;
 	private static final int GHOST_BTN_GAP  = 12;
-	private static final int GHOST_BTN_Y_FROM_BOTTOM = 60;
 
-	/** Returns [x0, y0, x1, y1] for the given ghost button (0=confirm, 1=cancel). */
 	public static int[] ghostButtonRect(Minecraft mc, int idx) {
 		int sw = mc.getWindow().getGuiScaledWidth();
 		int sh = mc.getWindow().getGuiScaledHeight();
 		int totalW = GHOST_BTN_SIZE * 2 + GHOST_BTN_GAP;
 		int x0Base = (sw - totalW) / 2;
-		int y0 = sh - GHOST_BTN_Y_FROM_BOTTOM;
+		int y0 = sh - BOTTOM_BAR_H - GHOST_BTN_SIZE - 16;
 		int x0 = x0Base + idx * (GHOST_BTN_SIZE + GHOST_BTN_GAP);
 		return new int[]{x0, y0, x0 + GHOST_BTN_SIZE, y0 + GHOST_BTN_SIZE};
 	}
 
-	/** -1 if not over either, 0 = confirm, 1 = cancel. */
 	public static int mouseGhostButton(Minecraft mc) {
 		if (!com.civcraft.client.building.GhostState.isActive()
 				|| com.civcraft.client.building.GhostState.confirmed) return -1;
@@ -182,24 +381,15 @@ public final class CivcraftHud {
 
 	private static void drawGhostButton(GuiGraphics g, Minecraft mc, int[] rect, boolean confirm, boolean hover) {
 		int x0 = rect[0], y0 = rect[1], x1 = rect[2], y1 = rect[3];
-		int border, bg;
-		if (confirm) {
-			border = hover ? 0xFF7AE87A : 0xFF4FA84F;
-			bg     = hover ? 0xCC1A3E1A : 0xCC0E2A0E;
-		} else {
-			border = hover ? 0xFFE87A7A : 0xFFA84F4F;
-			bg     = hover ? 0xCC3E1A1A : 0xCC2A0E0E;
-		}
+		int border = confirm ? (hover ? 0xFF7AE87A : 0xFF4FA84F) : (hover ? 0xFFE87A7A : 0xFFA84F4F);
+		int bg     = confirm ? (hover ? 0xCC1A3E1A : 0xCC0E2A0E) : (hover ? 0xCC3E1A1A : 0xCC2A0E0E);
 		g.fill(x0 - 2, y0 - 2, x1 + 2, y1 + 2, border);
 		g.fill(x0,     y0,     x1,     y1,     bg);
-		// Glyph: ✓ or ✗ via lines.
 		int cx = (x0 + x1) / 2;
 		int cy = (y0 + y1) / 2;
 		int glyph = confirm ? 0xFFBFFFBF : 0xFFFFB3B3;
 		if (confirm) {
-			// Left stroke (short): from (cx-10, cy) to (cx-2, cy+8)
 			drawThickLine(g, cx - 10, cy, cx - 2, cy + 8, glyph);
-			// Right stroke (long): from (cx-2, cy+8) to (cx+12, cy-8)
 			drawThickLine(g, cx - 2, cy + 8, cx + 12, cy - 8, glyph);
 		} else {
 			drawThickLine(g, cx - 10, cy - 10, cx + 10, cy + 10, glyph);
@@ -210,7 +400,23 @@ public final class CivcraftHud {
 		g.drawString(mc.font, label, x0 + (GHOST_BTN_SIZE - tw) / 2, y1 + 3, 0xFFFFFFFF, false);
 	}
 
-	/** 2-pixel-thick line between two points, using axis-aligned fills for speed. */
+	// ─── Helpers ──────────────────────────────────────────────────────────────
+
+	/** Gold-bordered dark panel — the shared frame style for HUD elements. */
+	private static void drawPanel(GuiGraphics g, int x0, int y0, int x1, int y1) {
+		g.fill(x0, y0, x1, y1, 0xDD120B04);
+		g.fill(x0, y0, x1, y0 + 1, 0xFFD4AF37);
+		g.fill(x0, y1 - 1, x1, y1, 0xFFD4AF37);
+		g.fill(x0, y0, x0 + 1, y1, 0xFFD4AF37);
+		g.fill(x1 - 1, y0, x1, y1, 0xFFD4AF37);
+	}
+
+	private static boolean pointIn(Minecraft mc, double scale, int[] r) {
+		int mx = (int) (mc.mouseHandler.xpos() / scale);
+		int my = (int) (mc.mouseHandler.ypos() / scale);
+		return mx >= r[0] && mx <= r[2] && my >= r[1] && my <= r[3];
+	}
+
 	private static void drawThickLine(GuiGraphics g, int x1, int y1, int x2, int y2, int color) {
 		int dx = Math.abs(x2 - x1), dy = Math.abs(y2 - y1);
 		int sx = x1 < x2 ? 1 : -1, sy = y1 < y2 ? 1 : -1;
@@ -222,117 +428,6 @@ public final class CivcraftHud {
 			int e2 = 2 * err;
 			if (e2 > -dy) { err -= dy; x += sx; }
 			if (e2 < dx)  { err += dx; y += sy; }
-		}
-	}
-
-	/** -1 if mouse is not over any perk slot, else the slot index (0-based). */
-	public static int mousePerkSlot(Minecraft mc) {
-		if (SelectionState.kind == SelectionState.Kind.NONE) return -1;
-		int slots = SelectionState.kind == SelectionState.Kind.BUILDER_SQUAD ? 2 : 1;
-		double scale = mc.getWindow().getGuiScale();
-		for (int i = 0; i < slots; i++) {
-			if (pointIn(mc, scale, perkRect(mc, scale, i))) return i;
-		}
-		return -1;
-	}
-
-	private static boolean pointIn(Minecraft mc, double scale, int[] r) {
-		int mx = (int) (mc.mouseHandler.xpos() / scale);
-		int my = (int) (mc.mouseHandler.ypos() / scale);
-		return mx >= r[0] && mx <= r[2] && my >= r[1] && my <= r[3];
-	}
-
-	// --- drawing --------------------------------------------------------------
-
-	private static void drawPlanetAndPerks(GuiGraphics g, Minecraft mc, double scale) {
-		int[] p = planetRect(mc, scale);
-		boolean hoverPlanet = isMouseOverPlanet(mc);
-
-		// Animated planet frame.
-		int frame = 0;
-		long now = System.currentTimeMillis();
-		if (now - animStartMs < ANIM_DURATION_MS) {
-			float t = (now - animStartMs) / (float) ANIM_DURATION_MS;
-			frame = (int) (t * PLANET_FRAMES) % PLANET_FRAMES;
-		} else if (hoverPlanet) {
-			frame = (int) ((now / 120) % PLANET_FRAMES);  // idle bob on hover
-		}
-
-		drawPlanetSprite(g, p[0], p[1], frame, hoverPlanet);
-
-		// If something is selected, draw link line + perk icons for that kind.
-		SelectionState.Kind kind = SelectionState.kind;
-		if (kind == SelectionState.Kind.NONE) return;
-		Identifier[] icons;
-		String[] labels;
-		switch (kind) {
-			case SQUAD         -> { icons = new Identifier[]{ICON_FOUND};              labels = new String[]{"Ратуша"}; }
-			case BUILDING      -> { icons = new Identifier[]{ICON_SPAWN};              labels = new String[]{"Отряд"}; }
-			case BUILDER_SQUAD -> { icons = new Identifier[]{ICON_SMITHY, ICON_SAWMILL}; labels = new String[]{"Кузница", "Лесопилка"}; }
-			default            -> { return; }
-		}
-		int hoverSlot = mousePerkSlot(mc);
-		for (int i = 0; i < icons.length; i++) {
-			int[] pr = perkRect(mc, scale, i);
-			if (i == 0) {
-				int y = p[1] + PLANET_SIZE / 2;
-				g.fill(pr[2], y - 1, p[0], y + 1, 0xFFD4AF37);
-			}
-			drawPerkIcon(g, pr[0], pr[1], icons[i], hoverSlot == i);
-			String label = labels[i];
-			int tw = mc.font.width(label);
-			int tx = pr[0] + (ICON_SIZE - tw) / 2;
-			g.drawString(mc.font, "§e" + label, tx, pr[3] + 4, 0xFFFFFFFF, false);
-		}
-	}
-
-	private static void drawPlanetSprite(GuiGraphics g, int x0, int y0, int frame, boolean hover) {
-		// Gold ring around planet (two concentric "rings" drawn as thin fills).
-		int cx = x0 + PLANET_SIZE / 2;
-		int cy = y0 + PLANET_SIZE / 2;
-		int rOuter = PLANET_SIZE / 2 + 3;
-		int rInner = PLANET_SIZE / 2 + 1;
-		int ringColor = hover ? 0xFFFFDA66 : 0xFFD4AF37;
-		ringCircle(g, cx, cy, rOuter, ringColor);
-		ringCircle(g, cx, cy, rInner, ringColor);
-
-		// Planet sprite frame — blit from 256×32 sheet, scaled to 64×64.
-		float u = frame * (float) PLANET_SRC;
-		g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
-				PLANET_SHEET,
-				x0, y0,
-				u, 0f,
-				PLANET_SIZE, PLANET_SIZE,
-				PLANET_SRC, PLANET_SRC,
-				PLANET_SRC * PLANET_FRAMES, PLANET_SRC);
-	}
-
-	private static void drawPerkIcon(GuiGraphics g, int x0, int y0, Identifier icon, boolean hover) {
-		int border = hover ? 0xFFFFDA66 : 0xFFD4AF37;
-		int bg     = hover ? 0xEE2A1F10 : 0xDD120B04;
-		int x1 = x0 + ICON_SIZE, y1 = y0 + ICON_SIZE;
-		g.fill(x0 - 2, y0 - 2, x1 + 2, y1 + 2, border);
-		g.fill(x0 - 1, y0 - 1, x1 + 1, y1 + 1, bg);
-		g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
-				icon, x0, y0, 0f, 0f,
-				ICON_SIZE, ICON_SIZE, ICON_SIZE, ICON_SIZE, ICON_SIZE, ICON_SIZE);
-	}
-
-	/** Draw a 1-px-thick circle outline via the midpoint algorithm. */
-	private static void ringCircle(GuiGraphics g, int cx, int cy, int r, int color) {
-		int x = r, y = 0, err = 0;
-		while (x >= y) {
-			g.fill(cx + x, cy + y, cx + x + 1, cy + y + 1, color);
-			g.fill(cx + y, cy + x, cx + y + 1, cy + x + 1, color);
-			g.fill(cx - y, cy + x, cx - y + 1, cy + x + 1, color);
-			g.fill(cx - x, cy + y, cx - x + 1, cy + y + 1, color);
-			g.fill(cx - x, cy - y, cx - x + 1, cy - y + 1, color);
-			g.fill(cx - y, cy - x, cx - y + 1, cy - x + 1, color);
-			g.fill(cx + y, cy - x, cx + y + 1, cy - x + 1, color);
-			g.fill(cx + x, cy - y, cx + x + 1, cy - y + 1, color);
-			y++;
-			if (err <= 0) err += 2 * y + 1;
-			if (err > 0)  { x--; err -= 2 * x + 1; }
 		}
 	}
 }
