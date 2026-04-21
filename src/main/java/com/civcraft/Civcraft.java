@@ -631,9 +631,14 @@ public class Civcraft implements ModInitializer {
 		LOGGER.info("[CivCraft] Spawned settlers: spire={} anchor={}", p, anchor);
 	}
 
+	public static final int TOWN_HALL_Y_OFFSET = -3;
+
 	private static void buildTownHall(ServerLevel level, net.minecraft.core.BlockPos base) {
-		if (placeFromTemplate(level, base, "townhall")) {
-			level.setBlockAndUpdate(base.offset(0, 5, 0), ModBlocks.TOWN_HALL.defaultBlockState());
+		// Sink the town hall 3 blocks into the ground — matches client ghost preview.
+		BlockPos anchor = base.offset(0, TOWN_HALL_Y_OFFSET, 0);
+		if (placeFromTemplate(level, anchor, "townhall")) {
+			// Spire sits on top of the now-sunken structure.
+			level.setBlockAndUpdate(anchor.offset(0, 5, 0), ModBlocks.TOWN_HALL.defaultBlockState());
 			return;
 		}
 		var cobble = net.minecraft.world.level.block.Blocks.COBBLESTONE.defaultBlockState();
@@ -644,28 +649,28 @@ public class Civcraft implements ModInitializer {
 
 		for (int x = -2; x <= 2; x++) {
 			for (int z = -2; z <= 2; z++) {
-				level.setBlockAndUpdate(base.offset(x, 0, z), cobble);
-				level.setBlockAndUpdate(base.offset(x, 4, z), planks);
+				level.setBlockAndUpdate(anchor.offset(x, 0, z), cobble);
+				level.setBlockAndUpdate(anchor.offset(x, 4, z), planks);
 			}
 		}
 		for (int y = 1; y <= 3; y++) {
 			for (int x = -2; x <= 2; x++) {
 				for (int z = -2; z <= 2; z++) {
 					boolean edge = Math.abs(x) == 2 || Math.abs(z) == 2;
-					if (!edge) { level.setBlockAndUpdate(base.offset(x, y, z), air); continue; }
+					if (!edge) { level.setBlockAndUpdate(anchor.offset(x, y, z), air); continue; }
 					boolean corner = Math.abs(x) == 2 && Math.abs(z) == 2;
 					boolean isDoorColumn = (x == 0 && z == -2);
 					boolean isWindow = y == 2 && !corner && !isDoorColumn;
 					var use = corner ? log : (isWindow ? glass : cobble);
-					BlockPos at = base.offset(x, y, z);
+					BlockPos at = anchor.offset(x, y, z);
 					level.setBlockAndUpdate(at, use);
 					if (corner) PROTECTED_LOGS.add(at.immutable());
 				}
 			}
 		}
-		level.setBlockAndUpdate(base.offset(0, 1, -2), air);
-		level.setBlockAndUpdate(base.offset(0, 2, -2), air);
-		level.setBlockAndUpdate(base.offset(0, 5, 0), ModBlocks.TOWN_HALL.defaultBlockState());
+		level.setBlockAndUpdate(anchor.offset(0, 1, -2), air);
+		level.setBlockAndUpdate(anchor.offset(0, 2, -2), air);
+		level.setBlockAndUpdate(anchor.offset(0, 5, 0), ModBlocks.TOWN_HALL.defaultBlockState());
 	}
 
 	private static void handleMoveOrder(ServerLevel level, MoveOrderPayload payload) {
