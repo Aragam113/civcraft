@@ -50,21 +50,6 @@ public final class LensPostEffect {
 	private LensPostEffect() {}
 
 	public static void register() {
-		// Register the mask texture eagerly so the PostChain can resolve
-		// civcraft:territory_mask at compile time. If we wait until the first
-		// apply() call, the chain caches a "texture not found" state and the
-		// sampler falls back to whatever's bound to unit 0 — producing the
-		// chess-pattern the user was seeing.
-		Minecraft mc = Minecraft.getInstance();
-		if (mc != null && mc.getTextureManager() != null) {
-			ensureMaskTexture(mc);
-			// Paint it fully-owned so there's real data if sampled before our
-			// first real fill.
-			for (int y = 0; y < MASK_H; y++)
-				for (int x = 0; x < MASK_W; x++)
-					maskImage.setPixelABGR(x, y, 0xFFFFFFFF);
-			maskTexture.upload();
-		}
 		WorldRenderEvents.END_MAIN.register(ctx -> apply());
 	}
 
@@ -107,19 +92,7 @@ public final class LensPostEffect {
 		}
 	}
 
-	/** TEMP: paint mask fully-owned to diagnose whether the sampler binding
-	 *  is actually reading our DynamicTexture. If you see zero desaturation
-	 *  with this active, the binding is good and the real fillMask below is
-	 *  what's wrong. */
-	private static boolean DIAG_ALL_OWNED = true;
-
 	private static void fillMask(Minecraft mc, LensState.Mode mode) {
-		if (DIAG_ALL_OWNED) {
-			for (int y = 0; y < MASK_H; y++)
-				for (int x = 0; x < MASK_W; x++)
-					maskImage.setPixelABGR(x, y, 0xFFFFFFFF);
-			return;
-		}
 		int radius = mode.radius();
 		int rSq = radius * radius;
 		List<BlockPos> halls = nearbyHalls(mc);
