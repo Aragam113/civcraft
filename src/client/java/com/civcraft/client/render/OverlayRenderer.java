@@ -29,6 +29,13 @@ public final class OverlayRenderer {
 	private static final int RING_SEGMENTS = 24;
 	private static final float RING_RADIUS = 0.55f;
 
+	/** Client-side snapshot of each active move order so the trajectory arc
+	 *  stays pinned between the unit's position AT ORDER TIME and the fixed
+	 *  target — it won't re-curve every frame as the unit walks along it. */
+	private record MoveSnap(double sx, double sy, double sz,
+	                        double tx, double ty, double tz) {}
+	private static final java.util.Map<UUID, MoveSnap> SNAPS = new java.util.HashMap<>();
+
 	private OverlayRenderer() {}
 
 	public static void register() {
@@ -81,17 +88,33 @@ public final class OverlayRenderer {
 					anySelected ? 240 : 120));
 			if (anySelected) {
 				for (Entity e : members) {
-					Vec3 target = Civcraft.MOVE_TARGETS.get(e.getUUID());
-					if (target == null) continue;
-					sumX += e.getX();
-					sumZ += e.getZ();
-					sumTx += target.x;
-					sumTy += target.y;
-					sumTz += target.z;
+					UUID id = e.getUUID();
+					Vec3 target = Civcraft.MOVE_TARGETS.get(id);
+					if (target == null) {
+						SNAPS.remove(id);
+						continue;
+					}
+					MoveSnap snap = SNAPS.get(id);
+					// Re-snapshot when the order changes (different target).
+					if (snap == null
+							|| Math.abs(snap.tx() - target.x) > 0.5
+							|| Math.abs(snap.tz() - target.z) > 0.5) {
+						snap = new MoveSnap(
+								e.getX(), e.getY(), e.getZ(),
+								target.x, target.y, target.z);
+						SNAPS.put(id, snap);
+					}
+					sumX  += snap.sx();
+					sumZ  += snap.sz();
+					sumTx += snap.tx();
+					sumTy += snap.ty();
+					sumTz += snap.tz();
 					movingCount++;
 				}
 			}
 		}
+		// Drop snapshots for units that have finished their move.
+		SNAPS.keySet().removeIf(id -> !Civcraft.MOVE_TARGETS.containsKey(id));
 
 		// LINES phase: only ghost gizmos (arrows + check/cross) — rings and
 		// trajectories switch to filled-box so they can have real thickness.
@@ -101,17 +124,20 @@ public final class OverlayRenderer {
 		VertexConsumer filled = consumers.getBuffer(RenderTypes.debugFilledBox());
 		for (RingSpec s : ringSpecs) {
 			drawRingThick(matrices, filled,
-					s.cx() - cam.x, s.cy() - cam.y, s.cz() - cam.z,
+					s.cx() - cam.x, s.cy() + 0.12 - cam.y, s.cz() - cam.z,
 					s.radius(), 0.33f,
 					s.r(), s.g(), s.b(), s.a());
 		}
 		if (movingCount > 0) {
 			double avgX  = sumX  / movingCount, avgZ  = sumZ  / movingCount;
 			double avgTx = sumTx / movingCount, avgTy = sumTy / movingCount, avgTz = sumTz / movingCount;
-			int origY = level.getHeight(
-					net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE,
-					(int) Math.floor(avgX), (int) Math.floor(avgZ));
-			drawArcTrajectory(matrices, filled, cam, avgX, origY + 0.2, avgZ, avgTx, avgTy + 0.2, avgTz);
+			// Ground-snap endpoints so the arc starts and ends on the surface
+			// at their respective columns (terrain may differ from anchorY).
+			int origY  = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE,
+					(int) Math.floor(avgX),  (int) Math.floor(avgZ));
+			int destY  = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE,
+					(int) Math.floor(avgTx), (int) Math.floor(avgTz));
+			drawArcTrajectory(matrices, filled, cam, avgX, origY + 0.2, avgZ, avgTx, destY + 0.2, avgTz);
 		}
 
 		// Ghost building preview uses its own render-type wrap (invalidates
@@ -336,22 +362,32 @@ public final class OverlayRenderer {
 		}
 	}
 
-	/** Ring of small 3D cubes placed around a circle — guaranteed visible from
-	 *  top-down even with z-fighting issues on flat quads. */
+	/** Flat annulus (ring band) on the XZ plane, {@code thickness} blocks wide.
+	 *  Double-sided so it stays visible regardless of face-culling. */
 	private static void drawRingThick(PoseStack m, VertexConsumer buf,
 	                                  double cx, double cy, double cz,
 	                                  double radius, double thickness,
 	                                  int r, int g, int b, int a) {
-		int segs = 48;
-		double h = thickness * 0.5;
+		double inner = Math.max(0, radius - thickness / 2);
+		double outer = radius + thickness / 2;
+		int segs = 64;
+		PoseStack.Pose pose = m.last();
+		float y = (float) cy;
 		for (int i = 0; i < segs; i++) {
-			double ang = Math.PI * 2 * i / segs;
-			double x = cx + radius * Math.cos(ang);
-			double z = cz + radius * Math.sin(ang);
-			drawFilledCube(m, buf,
-					x - h, cy,             z - h,
-					x + h, cy + thickness, z + h,
-					r, g, b, a);
+			double a1 = Math.PI * 2 * i / segs;
+			double a2 = Math.PI * 2 * (i + 1) / segs;
+			float c1 = (float) Math.cos(a1), s1 = (float) Math.sin(a1);
+			float c2 = (float) Math.cos(a2), s2 = (float) Math.sin(a2);
+			// Top face (normal +Y)
+			buf.addVertex(pose, (float)(cx + inner * c1), y, (float)(cz + inner * s1)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + inner * c2), y, (float)(cz + inner * s2)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + outer * c2), y, (float)(cz + outer * s2)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + outer * c1), y, (float)(cz + outer * s1)).setColor(r, g, b, a);
+			// Bottom face (normal -Y) — opposite winding so it shows through.
+			buf.addVertex(pose, (float)(cx + inner * c1), y, (float)(cz + inner * s1)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + outer * c1), y, (float)(cz + outer * s1)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + outer * c2), y, (float)(cz + outer * s2)).setColor(r, g, b, a);
+			buf.addVertex(pose, (float)(cx + inner * c2), y, (float)(cz + inner * s2)).setColor(r, g, b, a);
 		}
 	}
 
