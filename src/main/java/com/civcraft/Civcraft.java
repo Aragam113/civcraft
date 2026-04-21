@@ -164,7 +164,6 @@ public class Civcraft implements ModInitializer {
 			loadedFrom = "bundled";
 		}
 		if (tpl == null) {
-			// Per-world structure-block saves.
 			Identifier id = Identifier.fromNamespaceAndPath(MOD_ID, name);
 			var opt = level.getStructureManager().get(id);
 			if (opt.isEmpty()) return false;
@@ -172,13 +171,18 @@ public class Civcraft implements ModInitializer {
 			loadedFrom = "per-world";
 		}
 		LOGGER.info("[CivCraft] Placed template {} from {}", name, loadedFrom);
-		StructurePlaceSettings settings = new StructurePlaceSettings();
-		tpl.placeInWorld(level, base, base, settings, level.getRandom(), 2);
+		// Structure NBT stores blocks with non-negative offsets (origin = NW-bottom
+		// corner). Shift the placement so the template's CENTER lands on the
+		// caller's base — matches the client-side ghost preview which is also
+		// centered around the drag position.
 		net.minecraft.core.Vec3i size = tpl.getSize();
+		BlockPos anchor = base.offset(-size.getX() / 2, 0, -size.getZ() / 2);
+		StructurePlaceSettings settings = new StructurePlaceSettings();
+		tpl.placeInWorld(level, anchor, anchor, settings, level.getRandom(), 2);
 		for (int x = 0; x < size.getX(); x++) {
 			for (int y = 0; y < size.getY(); y++) {
 				for (int z = 0; z < size.getZ(); z++) {
-					BlockPos p = base.offset(x, y, z);
+					BlockPos p = anchor.offset(x, y, z);
 					if (isLog(level, p)) PROTECTED_LOGS.add(p.immutable());
 				}
 			}
