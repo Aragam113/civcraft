@@ -31,6 +31,16 @@ loom {
 		}
 	}
 
+	// Pin the dev client's username so the offline-mode UUID is stable
+	// across `runClient` invocations. Without this, Loom auto-generates a
+	// random "PlayerNNN" every launch, each with its own UUID, and any
+	// persisted playerId reference (town hall owner, etc.) becomes
+	// orphaned on the next run.
+	runs {
+		client {
+			programArgs '--username', 'CivDev'
+		}
+	}
 }
 
 dependencies {

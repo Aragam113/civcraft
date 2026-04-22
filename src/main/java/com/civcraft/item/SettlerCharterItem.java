@@ -29,6 +29,12 @@ public class SettlerCharterItem extends Item {
 
 	public static int nextSquadId() { return SQUAD_COUNTER.getAndIncrement(); }
 
+	public static int peekNextSquadId() { return SQUAD_COUNTER.get(); }
+
+	public static void restoreSquadCounter(int next) {
+		SQUAD_COUNTER.set(Math.max(1, next));
+	}
+
 	/** Encode: "⚔ Поселенец §8#N" — the trailing "#N" is what clients parse. */
 	private static Component labelWithSquadId(String baseName, int squadId) {
 		return Component.literal(baseName + " §8#" + squadId);
@@ -106,6 +112,7 @@ public class SettlerCharterItem extends Item {
 			tagAsSquadMember(mule);
 			world.addFreshEntity(mule);
 		}
+		com.civcraft.Civcraft.persistState(world.getServer());
 	}
 
 	public static void spawnBuilderSquadAt(ServerLevel world, BlockPos anchor) {
@@ -124,6 +131,7 @@ public class SettlerCharterItem extends Item {
 			tagAsSquadMember(v);
 			world.addFreshEntity(v);
 		}
+		com.civcraft.Civcraft.persistState(world.getServer());
 	}
 
 	public static Villager spawnLumberjackAt(ServerLevel world, BlockPos anchor) {
@@ -136,6 +144,7 @@ public class SettlerCharterItem extends Item {
 		v.setPersistenceRequired();
 		tagAsSquadMember(v);
 		world.addFreshEntity(v);
+		com.civcraft.Civcraft.persistState(world.getServer());
 		return v;
 	}
 

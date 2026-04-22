@@ -5,7 +5,8 @@
 			"vertex_shader":   "minecraft:core/screenquad",
 			"fragment_shader": "civcraft:post/civcraft_lens",
 			"inputs": [
-				{ "sampler_name": "In", "target": "minecraft:main" }
+				{ "sampler_name": "In", "target": "minecraft:main" },
+				{ "sampler_name": "Mask", "location": "civcraft:mask", "width": 256, "height": 256, "bilinear": false }
 			],
 			"output": "swap"
 		},

@@ -190,9 +190,12 @@ public final class OverlayRenderer {
 			drawDragRadiusRing(mc, dispatcher, matrices, ringBuf, cam);
 		}
 
-		double px = com.civcraft.client.building.GhostState.pos.getX();
-		double py = com.civcraft.client.building.GhostState.pos.getY();
-		double pz = com.civcraft.client.building.GhostState.pos.getZ();
+		int ipx = com.civcraft.client.building.GhostState.pos.getX();
+		int ipy = com.civcraft.client.building.GhostState.pos.getY();
+		int ipz = com.civcraft.client.building.GhostState.pos.getZ();
+		boolean forbidden = com.civcraft.client.building.GhostValidator.isForbidden(
+				mc, ipx, ipy, ipz, com.civcraft.client.building.GhostState.kind);
+		double px = ipx, py = ipy, pz = ipz;
 		for (var gb : com.civcraft.client.building.GhostState.shape()) {
 			matrices.pushPose();
 			matrices.translate(
@@ -202,6 +205,20 @@ public final class OverlayRenderer {
 			dispatcher.renderSingleBlock(gb.state(), matrices, ghostBuf,
 					0x00F000F0, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY);
 			matrices.popPose();
+		}
+		// Translucent red wash over every ghost block when the placement
+		// would be rejected. Drawn after the blocks so it sits on top.
+		if (forbidden) {
+			VertexConsumer redBuf = consumers.getBuffer(RenderTypes.debugFilledBox());
+			for (var gb : com.civcraft.client.building.GhostState.shape()) {
+				double bx = px + gb.dx() - cam.x;
+				double by = py + gb.dy() - cam.y;
+				double bz = pz + gb.dz() - cam.z;
+				drawFilledCube(matrices, redBuf,
+						bx - 0.02, by - 0.02, bz - 0.02,
+						bx + 1.02, by + 1.02, bz + 1.02,
+						240, 60, 60, 110);
+			}
 		}
 	}
 
@@ -500,17 +517,31 @@ public final class OverlayRenderer {
 		}
 	}
 
-	/** 3D ribbon arrow bent into a parabolic arc. Horizontal ribbon tapers
-	 *  from thin at origin to wide near destination, followed by a flat
-	 *  triangular arrowhead pointing along the tangent. White + fully opaque. */
+	/** Single continuous 3D ribbon arrow bent into a parabolic arc. The
+	 *  width profile starts narrow, flares out near the end, then tapers
+	 *  to a point — so the whole trajectory reads as one arrow instead of
+	 *  a shaft with a detached arrowhead. White + mostly opaque.
+	 *
+	 *  <p>Peak arc height is clamped so the apex never sits more than
+	 *  three blocks above {@code max(y0, y1)}, keeping the curve under
+	 *  any overhangs the caller might not know about. */
 	private static void drawArcTrajectory(PoseStack m, VertexConsumer buf, Vec3 cam,
 	                                      double x0, double y0, double z0,
 	                                      double x1, double y1, double z1) {
 		double dist = Math.hypot(x1 - x0, z1 - z0);
 		if (dist < 0.1) return;
-		double arcHeight = Math.max(2.5, dist * 0.35);
+
+		// Clamp arcHeight so the parabola's apex stays within max(y0,y1)+1.
+		// Peak of sy(t) = y0 + dΔ·t + 4A·t(1-t) within t∈[0,1] is
+		// (y0+y1)/2 + A + dΔ²/(16A) when |dΔ| < 4A; the constraint
+		// peak ≤ max(y0,y1) + H (with H = 1) expands via
+		//   A² − (|dΔ|/2 + H)·A + dΔ²/16 = 0
+		// to A_upper = (|dΔ|/2 + H + √(2H·|dΔ| + H²)) / 2.
+		double absDy = Math.abs(y1 - y0);
+		double aUpper = (0.5 * absDy + 1.0 + Math.sqrt(2.0 * absDy + 1.0)) * 0.5;
+		double arcHeight = Math.min(Math.max(0.3, dist * 0.15), aUpper);
+
 		int steps = 32;
-		// Sample points along the parabola.
 		double[] sx = new double[steps + 1];
 		double[] sy = new double[steps + 1];
 		double[] sz = new double[steps + 1];
@@ -523,16 +554,14 @@ public final class OverlayRenderer {
 
 		PoseStack.Pose pose = m.last();
 		int r = 250, g = 250, b = 250, a = 240;
-		// Leave the last segment for the arrowhead so it doesn't overlap.
-		int ribbonSteps = steps - 3;
 
-		for (int i = 0; i < ribbonSteps; i++) {
+		// Continuous ribbon over ALL segments. Width function forms a
+		// narrow shaft → flared arrowhead base → point.
+		for (int i = 0; i < steps; i++) {
 			double t0 = i / (double) steps;
 			double t1 = (i + 1) / (double) steps;
-			// Width tapers 0.18 → 0.45 blocks.
-			double w0 = 0.18 + 0.27 * t0;
-			double w1 = 0.18 + 0.27 * t1;
-			// Perpendicular in XZ to the local tangent.
+			double w0 = arrowHalfWidth(t0);
+			double w1 = arrowHalfWidth(t1);
 			double fx = sx[i + 1] - sx[i];
 			double fz = sz[i + 1] - sz[i];
 			double fl = Math.hypot(fx, fz);
@@ -545,37 +574,24 @@ public final class OverlayRenderer {
 					sx[i + 1] + rx * w1, sy[i + 1], sz[i + 1] + rz * w1,
 					cam, r, g, b, a);
 		}
+	}
 
-		// Arrowhead: flat triangle pointing along the final tangent, wider than
-		// the ribbon tip for a clear "arrow" silhouette.
-		int n = steps;
-		double fx = sx[n] - sx[n - 3];
-		double fz = sz[n] - sz[n - 3];
-		double fl = Math.hypot(fx, fz);
-		if (fl < 1e-5) return;
-		double fxN = fx / fl, fzN = fz / fl;
-		double rxN = fzN, rzN = -fxN;
-		double headLen  = 1.4;
-		double headHalf = 0.65;
-		double tipX = sx[n],          tipY = sy[n],          tipZ = sz[n];
-		double baseX = tipX - fxN * headLen;
-		double baseZ = tipZ - fzN * headLen;
-		double baseY = sy[n - 3];
-		double lX = baseX + rxN * headHalf, lZ = baseZ + rzN * headHalf;
-		double rX = baseX - rxN * headHalf, rZ = baseZ - rzN * headHalf;
-		// Thin vertical extrusion so the arrowhead has some 3D presence.
-		double lift = 0.08;
-		emitArrowTri(pose, buf, cam,
-				tipX, tipY + lift, tipZ,
-				lX,   baseY + lift, lZ,
-				rX,   baseY + lift, rZ,
-				255, 255, 255, 255);
-		// Underside, wound the other way so the tri is visible from below too.
-		emitArrowTri(pose, buf, cam,
-				tipX, tipY - lift, tipZ,
-				rX,   baseY - lift, rZ,
-				lX,   baseY - lift, lZ,
-				255, 255, 255, 255);
+	/**
+	 * Half-width of the unified arrow ribbon along the parametric length
+	 * {@code t ∈ [0, 1]}. Three-phase profile — shaft, arrowhead flare,
+	 * point — designed so neighbouring samples remain convex.
+	 */
+	private static double arrowHalfWidth(double t) {
+		if (t < 0.82) {
+			// Shaft: narrow, growing slightly.
+			return 0.15 + 0.18 * (t / 0.82);
+		} else if (t < 0.90) {
+			// Flare into the arrowhead base.
+			return 0.33 + 0.32 * ((t - 0.82) / 0.08);
+		} else {
+			// Point: taper to zero at t = 1.
+			return 0.65 * (1.0 - (t - 0.90) / 0.10);
+		}
 	}
 
 	private static void emitRibbonQuad(PoseStack.Pose p, VertexConsumer buf,
@@ -597,22 +613,6 @@ public final class OverlayRenderer {
 				cx - cam.x, cy - cam.y, cz - cam.z,
 				bx - cam.x, by - cam.y, bz - cam.z,
 				r, g, b, a);
-	}
-
-	private static void emitArrowTri(PoseStack.Pose p, VertexConsumer buf, Vec3 cam,
-	                                 double tipX, double tipY, double tipZ,
-	                                 double lX, double lY, double lZ,
-	                                 double rX, double rY, double rZ,
-	                                 int r, int g, int b, int a) {
-		// Emit as a degenerate quad (tip doubled) so we stay on the quad-based
-		// debugFilledBox pipeline.
-		float txc = (float)(tipX - cam.x), tyc = (float)(tipY - cam.y), tzc = (float)(tipZ - cam.z);
-		float lxc = (float)(lX - cam.x),   lyc = (float)(lY - cam.y),   lzc = (float)(lZ - cam.z);
-		float rxc = (float)(rX - cam.x),   ryc = (float)(rY - cam.y),   rzc = (float)(rZ - cam.z);
-		buf.addVertex(p, txc, tyc, tzc).setColor(r, g, b, a);
-		buf.addVertex(p, lxc, lyc, lzc).setColor(r, g, b, a);
-		buf.addVertex(p, rxc, ryc, rzc).setColor(r, g, b, a);
-		buf.addVertex(p, txc, tyc, tzc).setColor(r, g, b, a);
 	}
 
 	private static void drawFilledCube(PoseStack m, VertexConsumer buf,

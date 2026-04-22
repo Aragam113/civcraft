@@ -104,6 +104,7 @@ public final class CivcraftHud {
 		drawBottomBar(graphics, mc);
 		drawSelectionRect(graphics, mc);
 		drawGhostButtons(graphics, mc);
+		drawTownHallLabels(graphics, mc);
 
 		// Cursor last, over everything — already in virtual-pixel space.
 		int x = (int) (mc.mouseHandler.xpos() / HUD_SCALE);
@@ -114,20 +115,74 @@ public final class CivcraftHud {
 		graphics.pose().popMatrix();
 	}
 
+	/**
+	 * Floating ID tag above every known town hall. Screen-projected via
+	 * {@link com.civcraft.client.camera.CameraMath#worldToScreen}, then
+	 * converted from raw window pixels into our HUD virtual-pixel space.
+	 */
+	private static void drawTownHallLabels(GuiGraphics g, Minecraft mc) {
+		var halls = com.civcraft.client.territory.ClientTownHalls.all();
+		if (halls.isEmpty()) return;
+		java.util.UUID myId = mc.player != null ? mc.player.getUUID() : null;
+		for (var th : halls) {
+			float[] s = com.civcraft.client.camera.CameraMath.worldToScreen(mc,
+					th.pos().getX() + 0.5,
+					th.pos().getY() + 1.5,
+					th.pos().getZ() + 0.5);
+			if (s == null) continue;
+			int sx = (int) (s[0] / HUD_SCALE);
+			int sy = (int) (s[1] / HUD_SCALE);
+			String title = "#" + th.townHallId();
+			String pop = "§7☺ " + th.population() + "/" + th.housingCap();
+			int lineH = mc.font.lineHeight;
+			int tw = Math.max(mc.font.width(title), mc.font.width(pop));
+			int pad = 3;
+			int bx = sx - tw / 2 - pad;
+			int by = sy - lineH * 2 - pad * 2;
+			int bw = tw + pad * 2;
+			int bh = lineH * 2 + pad * 2;
+			int bg = (myId != null && th.playerId().equals(myId)) ? 0xC000C000 : 0xC0404040;
+			g.fill(bx, by, bx + bw, by + bh, bg);
+			g.drawString(mc.font, title, sx - mc.font.width(title) / 2, by + pad, 0xFFFFFFFF, true);
+			g.drawString(mc.font, pop,   sx - mc.font.width(pop)   / 2, by + pad + lineH, 0xFFFFFFFF, true);
+		}
+	}
+
 	// ─── Top bar ──────────────────────────────────────────────────────────────
 
 	private static void drawResourceBar(GuiGraphics g, Minecraft mc) {
 		int sw = hudWidth(mc);
 		ItemStack[] icons = { RES_FOOD, RES_PRODUCTION, RES_GOLD, RES_SCIENCE, RES_CULTURE };
-		// Food and gold are STORED balances; production/science/culture are
-		// Civ6-style per-turn YIELDS — render with a leading "+".
-		String[] labels = {
-				Integer.toString(ResourceState.food),
-				"+" + ResourceState.production,
-				Integer.toString(ResourceState.gold),
-				"+" + ResourceState.science,
-				"+" + ResourceState.culture,
-		};
+		// If a town hall is currently selected, replace Food + Production in
+		// the bar with the LOCAL city values (food meter / per-turn production)
+		// while keeping gold / science / culture global — that matches the
+		// Concept.md split where those three stay civ-wide.
+		String[] labels;
+		com.civcraft.territory.TownHallEntry selected = null;
+		if (com.civcraft.client.selection.SelectionState.kind
+				== com.civcraft.client.selection.SelectionState.Kind.BUILDING
+				&& com.civcraft.client.selection.SelectionState.selectedBuilding != null) {
+			selected = com.civcraft.client.territory.ClientTownHalls.findAt(
+					com.civcraft.client.selection.SelectionState.selectedBuilding);
+		}
+		if (selected != null) {
+			int threshold = com.civcraft.territory.TownHallEntry.foodThresholdFor(selected.population());
+			labels = new String[] {
+					selected.foodMeter() + "/" + threshold + " §2(+" + selected.foodYield() + ")",
+					"+" + selected.productionYield(),
+					Integer.toString(ResourceState.gold),
+					"+" + ResourceState.science,
+					"+" + ResourceState.culture,
+			};
+		} else {
+			labels = new String[] {
+					Integer.toString(ResourceState.food),
+					"+" + ResourceState.production,
+					Integer.toString(ResourceState.gold),
+					"+" + ResourceState.science,
+					"+" + ResourceState.culture,
+			};
+		}
 		int slotW = 72;
 		int rowH = 20;
 		int totalW = slotW * icons.length;

@@ -72,6 +72,14 @@ public class CivcraftClient implements ClientModInitializer {
 				});
 
 		ClientPlayNetworking.registerGlobalReceiver(
+				com.civcraft.network.TownHallSyncPayload.ID, (payload, context) ->
+						com.civcraft.client.territory.ClientTownHalls.setAll(payload.entries()));
+
+		ClientPlayNetworking.registerGlobalReceiver(
+				com.civcraft.network.ConstructionSitesPayload.ID, (payload, context) ->
+						com.civcraft.client.building.ClientConstructionSites.setAll(payload.sites()));
+
+		ClientPlayNetworking.registerGlobalReceiver(
 				com.civcraft.network.GhostStatePayload.ID, (payload, context) -> {
 					if (payload.kind() == com.civcraft.network.GhostStatePayload.KIND_NONE) {
 						com.civcraft.client.building.GhostState.clear();
@@ -292,8 +300,10 @@ public class CivcraftClient implements ClientModInitializer {
 				}
 				int hudBtn = com.civcraft.client.hud.CivcraftHud.mouseGhostButton(client);
 				if (hudBtn == 0) {
-					net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
-							new com.civcraft.network.ConfirmGhostPayload());
+					if (!tryConfirmGhost(client)) {
+						prevLmb = true; prevRmb = rmb;
+						return;
+					}
 					prevLmb = true; prevRmb = rmb;
 					return;
 				}
@@ -318,8 +328,7 @@ public class CivcraftClient implements ClientModInitializer {
 				com.civcraft.client.building.GhostState.dragging = false;
 			}
 			if (rmb && !prevRmb) {
-				net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
-						new com.civcraft.network.ConfirmGhostPayload());
+				tryConfirmGhost(client);
 			}
 			prevLmb = lmb;
 			prevRmb = rmb;
@@ -364,6 +373,30 @@ public class CivcraftClient implements ClientModInitializer {
 
 		prevLmb = lmb;
 		prevRmb = rmb;
+	}
+
+	/**
+	 * Gate-keeps the confirm packet behind a local legality check so the
+	 * server never has to reject a ghost the player was allowed to try.
+	 * Returns true when the packet was sent, false when the ghost is in
+	 * a red zone (overlap with existing blocks or a TH too close to a
+	 * foreign claim) — in that case we surface a chat hint instead.
+	 */
+	private boolean tryConfirmGhost(Minecraft client) {
+		var pos = com.civcraft.client.building.GhostState.pos;
+		byte kind = com.civcraft.client.building.GhostState.kind;
+		if (com.civcraft.client.building.GhostValidator.isForbidden(
+				client, pos.getX(), pos.getY(), pos.getZ(), kind)) {
+			if (client.player != null) {
+				client.player.displayClientMessage(net.minecraft.network.chat.Component.literal(
+						"§cЗдесь строить нельзя — перекрытие или слишком близко к чужому государству."),
+						true);
+			}
+			return false;
+		}
+		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+				new com.civcraft.network.ConfirmGhostPayload());
+		return true;
 	}
 
 	private static final double GIZMO_PIXEL_RADIUS = 28.0;

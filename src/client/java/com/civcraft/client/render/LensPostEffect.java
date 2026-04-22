@@ -26,7 +26,19 @@ public final class LensPostEffect {
 	private static void apply() {
 		if (LensState.mode == LensState.Mode.NONE) return;
 		Minecraft mc = Minecraft.getInstance();
-		if (mc == null || mc.level == null) return;
+		if (mc == null || mc.level == null || mc.player == null) return;
+
+		// Register the DynamicTexture under the PostChain-transformed path
+		// BEFORE getPostChain, so the pass captures our texture instead of
+		// the file-loaded one.
+		LensMaskTexture.ensureRegistered();
+
+		// Paint the screen-space mask directly: for every "keep" block in a
+		// horizontal radius around the camera, project its centre through
+		// the current VP matrix and mark the corresponding mask texel.
+		com.civcraft.client.lens.ScreenMaskPainter.paint(LensMaskTexture.image(), mc);
+		LensMaskTexture.uploadFromImage();
+
 		PostChain chain;
 		try {
 			chain = mc.getShaderManager().getPostChain(POST_CHAIN_ID,

@@ -8,22 +8,25 @@ package com.civcraft.client.lens;
 public final class LensState {
 	public enum Mode {
 		NONE,
-		CITY,   // 8-block discs around each owned town hall
-		STATE;  // 24-block discs — "state borders"
+		CITY,     // per-hall tint over own territory
+		STATE,    // per-player tint over all territory
+		SETTLER;  // colourful wilderness, red = buffer, grey = already claimed
 
 		public Mode next() {
 			return switch (this) {
-				case NONE  -> CITY;
-				case CITY  -> STATE;
-				case STATE -> NONE;
+				case NONE    -> CITY;
+				case CITY    -> STATE;
+				case STATE   -> SETTLER;
+				case SETTLER -> NONE;
 			};
 		}
 
 		public String localized() {
 			return switch (this) {
-				case NONE  -> "Линза: нет";
-				case CITY  -> "Границы города";
-				case STATE -> "Границы государства";
+				case NONE    -> "Линза: нет";
+				case CITY    -> "Границы города";
+				case STATE   -> "Границы государства";
+				case SETTLER -> "Линза поселенцев";
 			};
 		}
 

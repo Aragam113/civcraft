@@ -7,10 +7,15 @@ import com.civcraft.network.EndTurnPayload;
 import com.civcraft.network.GhostStatePayload;
 import com.civcraft.network.MoveOrderPayload;
 import com.civcraft.network.ResourceSyncPayload;
+import com.civcraft.network.ConstructionSitesPayload;
 import com.civcraft.network.SpawnGhostPayload;
 import com.civcraft.network.SpawnSettlersPayload;
+import com.civcraft.network.TownHallSyncPayload;
 import com.civcraft.network.TurnStatePayload;
 import com.civcraft.network.UpdateGhostPosPayload;
+import com.civcraft.territory.CivcraftSavedData;
+import com.civcraft.territory.TownHallEntry;
+import com.civcraft.territory.TownHallRegistry;
 import com.civcraft.turn.Era;
 import com.civcraft.turn.TurnState;
 import com.civcraft.registry.ModBlocks;
@@ -83,13 +88,14 @@ public class Civcraft implements ModInitializer {
 	}
 	public static final java.util.Map<UUID, java.util.List<OwnedBuilding>> PLAYER_BUILDINGS = new ConcurrentHashMap<>();
 
-	/** Production points the player gets PER TURN from each building type. */
+	/** Production yield per turn per OwnedBuilding (town halls live in the
+	 *  separate {@link TownHallRegistry} and contribute via their own
+	 *  {@code productionYield()}). Values match Concept.md §9. */
 	private static int productionYieldOf(byte kind) {
 		return switch (kind) {
-			case SpawnGhostPayload.KIND_TOWNHALL   -> 2;
-			case SpawnGhostPayload.KIND_SAWMILL    -> 2;
-			case SpawnGhostPayload.KIND_QUARRY     -> 3;
-			case SpawnGhostPayload.KIND_SMITHY     -> 1;
+			case SpawnGhostPayload.KIND_SAWMILL    -> 1;
+			case SpawnGhostPayload.KIND_QUARRY     -> 2;
+			case SpawnGhostPayload.KIND_SMITHY     -> 2;
 			case SpawnGhostPayload.KIND_STOREHOUSE -> 1;
 			default -> 0;
 		};
@@ -117,18 +123,26 @@ public class Civcraft implements ModInitializer {
 		for (var b : PLAYER_BUILDINGS.getOrDefault(playerId, java.util.List.of())) {
 			y += productionYieldOf(b.kind);
 		}
+		// Town halls live in the territory registry, not PLAYER_BUILDINGS;
+		// their contribution (base + citizen-per-pop per Concept §5.2) must
+		// still show up in the player's total, otherwise a freshly founded
+		// civ has production 0 and no multi-turn build ever progresses.
+		for (TownHallEntry th : TownHallRegistry.snapshot()) {
+			if (th.playerId().equals(playerId)) y += th.productionYield();
+		}
 		return y;
 	}
 
-	/** Production cost for gradual build. 0 = free (settler-founded townhall). */
+	/** Production cost for gradual build — Concept.md §9 baseline. 0 on the
+	 *  town hall since it's founded by settlers, not built with production. */
 	private static int productionCostOf(byte kind) {
 		return switch (kind) {
 			case SpawnGhostPayload.KIND_TOWNHALL   -> 0;
-			case SpawnGhostPayload.KIND_STOREHOUSE -> 6;
-			case SpawnGhostPayload.KIND_SAWMILL    -> 10;
-			case SpawnGhostPayload.KIND_QUARRY     -> 10;
-			case SpawnGhostPayload.KIND_SMITHY     -> 15;
-			default -> 5;
+			case SpawnGhostPayload.KIND_STOREHOUSE -> 20;
+			case SpawnGhostPayload.KIND_SAWMILL    -> 20;
+			case SpawnGhostPayload.KIND_QUARRY     -> 25;
+			case SpawnGhostPayload.KIND_SMITHY     -> 35;
+			default -> 15;
 		};
 	}
 
@@ -170,7 +184,7 @@ public class Civcraft implements ModInitializer {
 
 		PayloadTypeRegistry.playC2S().register(SpawnSettlersPayload.ID, SpawnSettlersPayload.CODEC);
 		ServerPlayNetworking.registerGlobalReceiver(SpawnSettlersPayload.ID, (payload, context) ->
-				context.server().execute(() -> handleSpawnSettlers(context.player().level(), payload)));
+				context.server().execute(() -> handleSpawnSettlers(context.player(), payload)));
 
 		PayloadTypeRegistry.playC2S().register(SpawnGhostPayload.ID, SpawnGhostPayload.CODEC);
 		ServerPlayNetworking.registerGlobalReceiver(SpawnGhostPayload.ID, (payload, context) ->
@@ -191,6 +205,8 @@ public class Civcraft implements ModInitializer {
 		PayloadTypeRegistry.playS2C().register(ResourceSyncPayload.ID, ResourceSyncPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(GhostStatePayload.ID, GhostStatePayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(TurnStatePayload.ID, TurnStatePayload.CODEC);
+		PayloadTypeRegistry.playS2C().register(TownHallSyncPayload.ID, TownHallSyncPayload.CODEC);
+		PayloadTypeRegistry.playS2C().register(ConstructionSitesPayload.ID, ConstructionSitesPayload.CODEC);
 
 		PayloadTypeRegistry.playC2S().register(EndTurnPayload.ID, EndTurnPayload.CODEC);
 		ServerPlayNetworking.registerGlobalReceiver(EndTurnPayload.ID, (payload, context) ->
@@ -198,6 +214,21 @@ public class Civcraft implements ModInitializer {
 
 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
 				server.execute(() -> handlePlayerJoin(handler.getPlayer())));
+
+		net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+			CivcraftSavedData data = CivcraftSavedData.get(server);
+			TownHallRegistry.replaceAll(data.townHalls);
+			TownHallRegistry.restoreNextId(data.nextTownHallId);
+			com.civcraft.item.SettlerCharterItem.restoreSquadCounter(data.nextSquadId);
+			TurnState.turnNumber = data.turnNumber;
+			TurnState.year = data.year;
+			TurnState.era = Era.forYear(data.year);
+			LOGGER.info("[CivCraft] Restored saved state: {} town halls, turn {}, year {}, era {}",
+					data.townHalls.size(), data.turnNumber, data.year, TurnState.era);
+		});
+
+		net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STOPPING.register(
+				Civcraft::persistState);
 
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickMovement);
 		ServerTickEvents.END_SERVER_TICK.register(Civcraft::tickLumberjacks);
@@ -218,6 +249,27 @@ public class Civcraft implements ModInitializer {
 										"§74. Чтобы работало во ВСЕХ мирах сразу, скопируй .nbt в:\n" +
 										"§f   " + globalBlueprintDir().toAbsolutePath()));
 							}
+							return 1;
+						}))
+						.then(Commands.literal("claim_all").executes(ctx -> {
+							ServerPlayer p = ctx.getSource().getPlayer();
+							if (p == null) return 0;
+							UUID me = p.getUUID();
+							int reassigned = 0;
+							for (TownHallEntry e : TownHallRegistry.snapshot()) {
+								if (!e.playerId().equals(me)) {
+									TownHallRegistry.replaceEntry(new TownHallEntry(
+											e.townHallId(), me, e.pos(), e.createdAt(),
+											e.population(), e.foodMeter()));
+									reassigned++;
+								}
+							}
+							if (reassigned > 0 && p.level() instanceof ServerLevel sl) {
+								persistState(sl.getServer());
+								broadcastTownHalls(sl.getServer());
+							}
+							p.sendSystemMessage(Component.literal(
+									"§6Перепривязано ратуш: " + reassigned));
 							return 1;
 						}))));
 
@@ -333,6 +385,7 @@ public class Civcraft implements ModInitializer {
 				u -> new int[]{30, 40, 10, 0, 0});
 		sendCivResources(player, starting);
 		sendTurnState(player);
+		sendTownHalls(player);
 
 		// Only spawn the starter settler squad the FIRST time a player enters
 		// this world — the tag persists in the player's NBT, so re-joining no
@@ -397,6 +450,35 @@ public class Civcraft implements ModInitializer {
 		if (!(player.level() instanceof ServerLevel level)) return;
 
 		if (g.kind == SpawnGhostPayload.KIND_TOWNHALL) {
+			// Two distance buffers on new hall placement:
+			//   · 28 blocks past any foreign claim disc (anti-trespass)
+			//   · 18 blocks past any OWN claim disc (anti-crowding)
+			// Orphaned halls (owner not currently online) are ignored so a
+			// stale saved UUID can't block a returning player — use
+			// /civcraft claim_all to tidy those up.
+			int foreignMinSq = (TownHallEntry.CLAIM_RADIUS + 28)
+					* (TownHallEntry.CLAIM_RADIUS + 28);
+			int ownMinSq = (TownHallEntry.CLAIM_RADIUS + 18)
+					* (TownHallEntry.CLAIM_RADIUS + 18);
+			var pl = level.getServer().getPlayerList();
+			for (TownHallEntry th : TownHallRegistry.snapshot()) {
+				int dx = g.pos.getX() - th.pos().getX();
+				int dz = g.pos.getZ() - th.pos().getZ();
+				int d2 = dx * dx + dz * dz;
+				if (th.playerId().equals(player.getUUID())) {
+					if (d2 < ownMinSq) {
+						player.displayClientMessage(Component.literal(
+								"§cСлишком близко к своему городу (минимум 18 блоков от края своей территории)."), true);
+						return;
+					}
+				} else if (pl.getPlayer(th.playerId()) != null) {
+					if (d2 < foreignMinSq) {
+						player.displayClientMessage(Component.literal(
+								"§cСлишком близко к чужому государству (минимум 28 блоков от края чужой территории)."), true);
+						return;
+					}
+				}
+			}
 			// Settlers found the town hall: they vanish, the structure is
 			// placed, and a starter builder squad spawns nearby as a "reward".
 			for (UUID u : g.units) {
@@ -405,11 +487,22 @@ public class Civcraft implements ModInitializer {
 				MOVE_TARGETS.remove(u);
 			}
 			buildTownHall(level, g.pos);
+			// Register the hall at the SPIRE block's world position. The
+			// structure anchor sits {@code TOWN_HALL_Y_OFFSET} below the
+			// ghost base and {@code buildTownHall} puts the spire 5 blocks
+			// above that anchor, so the spire is at base + (Y_OFFSET + 5).
+			// Matching this position lets a client that clicks the spire
+			// resolve its TownHallEntry by BlockPos equality.
+			TownHallEntry th = TownHallRegistry.register(
+					player.getUUID(), g.pos.offset(0, TOWN_HALL_Y_OFFSET + 5, 0));
+			broadcastTownHalls(level.getServer());
+			persistState(level.getServer());
 			BlockPos builderSpot = findClearGround(level, g.pos.offset(5, 0, 0));
 			com.civcraft.item.SettlerCharterItem.spawnBuilderSquadAt(level, builderSpot);
 			PENDING_GHOSTS.remove(player.getUUID());
 			sendGhostCleared(player);
-			player.displayClientMessage(Component.literal("§6Ратуша заложена. Строители прибыли."), true);
+			player.displayClientMessage(Component.literal(
+					"§6Ратуша #" + th.townHallId() + " заложена. Строители прибыли."), true);
 		} else {
 			// Builder ghost. Check gold cost (instant deduct); if production yield
 			// meets or exceeds the cost we build now, otherwise start a gradual
@@ -445,17 +538,23 @@ public class Civcraft implements ModInitializer {
 				sendGhostCleared(player);
 				player.displayClientMessage(Component.literal("§6" + name + " построена."), true);
 			} else {
-				// Multi-turn construction. Ghost stays visible as a "site".
+				// Multi-turn construction: place the full structure, snapshot
+				// what changed, then revert every layer above the foundation
+				// back to the terrain that was there. The planned block list
+				// stays on the GhostBuilding so each turn can reveal one more
+				// Y-layer until the structure is complete.
 				g.confirmed = true;
 				g.target = prodCost;
 				g.progress = 0;
+				startGradualConstruction(level, g);
 				PENDING_GHOSTS.remove(player.getUUID());
 				ACTIVE_BUILDS.add(g);
 				sendCivResources(player, res);
 				sendGhostCleared(player);
+				broadcastConstructionSites(level.getServer());
 				int turns = Math.max(1, (prodCost + yield - 1) / Math.max(1, yield));
 				player.displayClientMessage(Component.literal(String.format(
-						"§6%s строится: %d/%d · ~%d ход(ов)", name, g.progress, g.target, turns)), true);
+						"§6%s заложена (фундамент) — достроится за ~%d ход(ов)", name, turns)), true);
 			}
 		}
 	}
@@ -521,9 +620,9 @@ public class Civcraft implements ModInitializer {
 				}
 				case WAIT_GHOST -> {
 					if (--job.waitTicks <= 0) {
-						g.progress++;
-						if (g.progress >= g.target) {
-							completeBuilding(lv, g);
+						boolean doneNow = advanceConstruction(lv, g, 1);
+						broadcastConstructionSites(server);
+						if (doneNow) {
 							e.discard();  // one builder consumed on completion
 							it.remove();
 							ACTIVE_BUILDS.remove(g);
@@ -548,20 +647,53 @@ public class Civcraft implements ModInitializer {
 				player.level() instanceof ServerLevel sl ? sl.getServer() : null;
 		if (server == null) return;
 		TurnState.advance();
-		// Production advance for all ACTIVE_BUILDS.
+		persistState(server);
+		// Per-town-hall tick: each hall accrues its food yield, grows
+		// population when the growth meter crosses the Civ-style threshold,
+		// and caps at the hall's housing. Mutations rebuild the registry
+		// list with updated immutable entries.
+		java.util.List<TownHallEntry> updated = new java.util.ArrayList<>();
+		boolean anyChange = false;
+		for (TownHallEntry e : TownHallRegistry.snapshot()) {
+			int meter = e.foodMeter() + e.foodYield();
+			int pop = e.population();
+			int threshold = TownHallEntry.foodThresholdFor(pop);
+			if (pop < e.housingCap() && meter >= threshold) {
+				pop++;
+				meter -= threshold;
+			}
+			if (meter != e.foodMeter() || pop != e.population()) {
+				updated.add(new TownHallEntry(
+						e.townHallId(), e.playerId(), e.pos(), e.createdAt(),
+						pop, meter));
+				anyChange = true;
+			} else {
+				updated.add(e);
+			}
+		}
+		if (anyChange) {
+			TownHallRegistry.replaceAll(updated);
+			persistState(server);
+			broadcastTownHalls(server);
+		}
+		// Production advance for all ACTIVE_BUILDS — each build raises its
+		// next layers in the world as progress crosses their thresholds.
+		boolean anyConstructionChanged = false;
 		for (var it = ACTIVE_BUILDS.iterator(); it.hasNext(); ) {
 			GhostBuilding g = it.next();
 			int yield = totalProductionYield(g.owner);
 			if (yield <= 0) continue;
-			g.progress += yield;
-			if (g.progress >= g.target) {
-				for (ServerLevel lv : server.getAllLevels()) {
-					if (lv.isLoaded(g.pos)) {
-						completeBuilding(lv, g);
-						break;
-					}
-				}
+			ServerLevel buildLevel = null;
+			for (ServerLevel lv : server.getAllLevels()) {
+				if (lv.isLoaded(g.pos)) { buildLevel = lv; break; }
+			}
+			if (buildLevel == null) continue;
+			int oldLayers = g.revealedLayers;
+			boolean finished = advanceConstruction(buildLevel, g, yield);
+			if (g.revealedLayers != oldLayers) anyConstructionChanged = true;
+			if (finished) {
 				it.remove();
+				anyConstructionChanged = true;
 				ServerPlayer owner = server.getPlayerList().getPlayer(g.owner);
 				if (owner != null) {
 					owner.displayClientMessage(Component.literal(
@@ -569,6 +701,7 @@ public class Civcraft implements ModInitializer {
 				}
 			}
 		}
+		if (anyConstructionChanged) broadcastConstructionSites(server);
 		// Sync new turn state to everyone connected.
 		TurnStatePayload p = new TurnStatePayload(
 				TurnState.turnNumber, TurnState.year, (byte) TurnState.era.ordinal());
@@ -580,6 +713,32 @@ public class Civcraft implements ModInitializer {
 	private static void sendTurnState(ServerPlayer player) {
 		ServerPlayNetworking.send(player, new TurnStatePayload(
 				TurnState.turnNumber, TurnState.year, (byte) TurnState.era.ordinal()));
+	}
+
+	public static void sendTownHalls(ServerPlayer player) {
+		ServerPlayNetworking.send(player,
+				new TownHallSyncPayload(TownHallRegistry.snapshot()));
+	}
+
+	private static void broadcastTownHalls(net.minecraft.server.MinecraftServer server) {
+		TownHallSyncPayload p = new TownHallSyncPayload(TownHallRegistry.snapshot());
+		for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+			ServerPlayNetworking.send(sp, p);
+		}
+	}
+
+	/** Push the live in-memory registries + counters back into the world
+	 *  SavedData and mark it dirty. Called after any mutation (town hall
+	 *  built, squad spawned) and also on server shutdown as a final flush. */
+	public static void persistState(net.minecraft.server.MinecraftServer server) {
+		if (server == null) return;
+		CivcraftSavedData data = CivcraftSavedData.get(server);
+		data.sync(
+				TownHallRegistry.snapshot(),
+				TownHallRegistry.peekNextId(),
+				com.civcraft.item.SettlerCharterItem.peekNextSquadId(),
+				TurnState.turnNumber,
+				TurnState.year);
 	}
 
 	private static BlockPos findNearestTownHall(ServerLevel lv, BlockPos from) {
@@ -604,6 +763,12 @@ public class Civcraft implements ModInitializer {
 	}
 
 	private static void completeBuilding(ServerLevel level, GhostBuilding g) {
+		placeBuildingStructure(level, g);
+		registerCompletedBuilding(level, g);
+	}
+
+	/** Puts the kind-specific blocks into the world. No bookkeeping. */
+	private static void placeBuildingStructure(ServerLevel level, GhostBuilding g) {
 		switch (g.kind) {
 			case SpawnGhostPayload.KIND_SMITHY -> buildSmithy(level, g.pos);
 			case SpawnGhostPayload.KIND_SAWMILL -> {
@@ -617,14 +782,130 @@ public class Civcraft implements ModInitializer {
 			case SpawnGhostPayload.KIND_STOREHOUSE -> buildStorehouse(level, g.pos);
 			case SpawnGhostPayload.KIND_QUARRY     -> buildQuarry(level, g.pos);
 		}
-		// Register the finished building so its yield counts in future turns.
+	}
+
+	/** Records the finished building into the owner's inventory and pushes
+	 *  the updated yield numbers to the HUD. */
+	private static void registerCompletedBuilding(ServerLevel level, GhostBuilding g) {
 		PLAYER_BUILDINGS.computeIfAbsent(g.owner, u -> new java.util.concurrent.CopyOnWriteArrayList<>())
 				.add(new OwnedBuilding(g.pos, g.kind));
-		// Push fresh yield numbers to the owner so the HUD updates immediately.
 		ServerPlayer owner = level.getServer().getPlayerList().getPlayer(g.owner);
 		if (owner != null) {
 			int[] r = PLAYER_RESOURCES.computeIfAbsent(g.owner, u -> new int[]{30, 40, 10, 0, 0});
 			sendCivResources(owner, r);
+		}
+	}
+
+	/** Bounding box we scan before and after placing, in order to detect
+	 *  every cell the build touches. Sized generously per kind so no
+	 *  structure block escapes the snapshot. */
+	private static int[] bboxForKind(byte kind, BlockPos p) {
+		return switch (kind) {
+			case SpawnGhostPayload.KIND_TOWNHALL -> new int[]{
+					p.getX() - 3, p.getY() - 4, p.getZ() - 3,
+					p.getX() + 3, p.getY() + 6, p.getZ() + 3 };
+			case SpawnGhostPayload.KIND_SAWMILL -> new int[]{
+					p.getX() - 2, p.getY()     , p.getZ() - 2,
+					p.getX() + 2, p.getY() + 3 , p.getZ() + 3 };
+			default -> new int[]{
+					p.getX() - 2, p.getY()     , p.getZ() - 2,
+					p.getX() + 2, p.getY() + 3 , p.getZ() + 2 };
+		};
+	}
+
+	/**
+	 * Initial placement for a gradual build: place the full structure,
+	 * record everything that changed, revert the layers above the bottom
+	 * one so the world shows only a foundation. Subsequent turns call
+	 * {@link #revealNextLayers} to raise more layers as production
+	 * progress crosses each fractional threshold.
+	 */
+	private static void startGradualConstruction(ServerLevel level, GhostBuilding g) {
+		int[] box = bboxForKind(g.kind, g.pos);
+		int minX = box[0], minY = box[1], minZ = box[2];
+		int maxX = box[3], maxY = box[4], maxZ = box[5];
+		java.util.Map<BlockPos, net.minecraft.world.level.block.state.BlockState> previous = new java.util.HashMap<>();
+		BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+		for (int x = minX; x <= maxX; x++) {
+			for (int y = minY; y <= maxY; y++) {
+				for (int z = minZ; z <= maxZ; z++) {
+					m.set(x, y, z);
+					previous.put(m.immutable(), level.getBlockState(m));
+				}
+			}
+		}
+		// Place the full structure.
+		placeBuildingStructure(level, g);
+		// Diff to find the intended block plan.
+		java.util.Map<BlockPos, net.minecraft.world.level.block.state.BlockState> intended = new java.util.HashMap<>();
+		int intendedMinY = Integer.MAX_VALUE;
+		for (var e : previous.entrySet()) {
+			var now = level.getBlockState(e.getKey());
+			if (!now.equals(e.getValue())) {
+				intended.put(e.getKey(), now);
+				if (e.getKey().getY() < intendedMinY) intendedMinY = e.getKey().getY();
+			}
+		}
+		// Revert everything above the bottom layer so the world shows only
+		// a foundation for now.
+		for (var e : intended.entrySet()) {
+			if (e.getKey().getY() > intendedMinY) {
+				level.setBlockAndUpdate(e.getKey(), previous.get(e.getKey()));
+			}
+		}
+		g.initPlannedLayers(intended, previous);
+	}
+
+	/**
+	 * Advances a gradual build. After bumping progress by {@code yield},
+	 * raises any layers whose fractional threshold the new progress has
+	 * crossed. Returns true iff the build finished this turn.
+	 */
+	private static boolean advanceConstruction(ServerLevel level, GhostBuilding g, int yield) {
+		if (g.intendedBlocks == null) {
+			// Shouldn't happen, but if we ever hit a legacy ghost without a
+			// plan, fall back to the old "complete once progress reaches
+			// target" behaviour so we don't stall.
+			g.progress += yield;
+			if (g.progress >= g.target) {
+				completeBuilding(level, g);
+				return true;
+			}
+			return false;
+		}
+		g.progress = Math.min(g.progress + yield, g.target);
+		int targetLayers = 1;
+		if (g.totalLayers > 1 && g.target > 0) {
+			targetLayers = 1 + (int) ((long) (g.totalLayers - 1) * g.progress / g.target);
+			if (targetLayers > g.totalLayers) targetLayers = g.totalLayers;
+		}
+		while (g.revealedLayers < targetLayers) {
+			int layerY = g.minY + g.revealedLayers; // next layer's Y
+			for (var e : g.intendedBlocks.entrySet()) {
+				if (e.getKey().getY() == layerY) {
+					level.setBlockAndUpdate(e.getKey(), e.getValue());
+				}
+			}
+			g.revealedLayers++;
+		}
+		if (g.revealedLayers >= g.totalLayers) {
+			registerCompletedBuilding(level, g);
+			return true;
+		}
+		return false;
+	}
+
+	private static void broadcastConstructionSites(net.minecraft.server.MinecraftServer server) {
+		java.util.List<ConstructionSitesPayload.Site> sites = new java.util.ArrayList<>();
+		for (GhostBuilding g : ACTIVE_BUILDS) {
+			if (g.intendedBlocks == null) continue;
+			sites.add(new ConstructionSitesPayload.Site(
+					g.bboxMinX, g.minY, g.bboxMinZ,
+					g.bboxMaxX, g.bboxMaxY, g.bboxMaxZ));
+		}
+		ConstructionSitesPayload payload = new ConstructionSitesPayload(sites);
+		for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+			ServerPlayNetworking.send(sp, payload);
 		}
 	}
 
@@ -795,10 +1076,24 @@ public class Civcraft implements ModInitializer {
 		return best;
 	}
 
-	private static void handleSpawnSettlers(ServerLevel level, SpawnSettlersPayload payload) {
+	private static void handleSpawnSettlers(ServerPlayer player, SpawnSettlersPayload payload) {
+		if (!(player.level() instanceof ServerLevel level)) return;
 		net.minecraft.core.BlockPos p = payload.pos();
 		if (level.getBlockState(p).getBlock() != ModBlocks.TOWN_HALL) {
 			LOGGER.info("[CivCraft] SpawnSettlers rejected: no town hall at {}", p);
+			return;
+		}
+		// Civ-style settler cost: the new squad takes a citizen with it,
+		// so we require ≥ 2 population and decrement by 1. Halls at pop 1
+		// are locked out until they grow to 2 via the food meter.
+		TownHallEntry entry = TownHallRegistry.getExactlyAt(p);
+		if (entry == null) {
+			LOGGER.warn("[CivCraft] SpawnSettlers: no registry entry at {}", p);
+			return;
+		}
+		if (entry.population() < 2) {
+			player.displayClientMessage(Component.literal(
+					"§cГороду нужно хотя бы 2 населения, чтобы отправить поселенцев."), true);
 			return;
 		}
 		int sx = p.getX() - 2;
@@ -806,7 +1101,11 @@ public class Civcraft implements ModInitializer {
 		int gy = level.getHeight(Heightmap.Types.WORLD_SURFACE, sx, sz);
 		net.minecraft.core.BlockPos anchor = new net.minecraft.core.BlockPos(sx, gy, sz);
 		com.civcraft.item.SettlerCharterItem.spawnSquadAt(level, anchor);
-		LOGGER.info("[CivCraft] Spawned settlers: spire={} anchor={}", p, anchor);
+		TownHallRegistry.replaceEntry(entry.withPopulation(entry.population() - 1));
+		persistState(level.getServer());
+		broadcastTownHalls(level.getServer());
+		LOGGER.info("[CivCraft] Spawned settlers from TH#{} (new pop={}): spire={} anchor={}",
+				entry.townHallId(), entry.population() - 1, p, anchor);
 	}
 
 	public static final int TOWN_HALL_Y_OFFSET = -3;
